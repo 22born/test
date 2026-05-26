@@ -2,6 +2,99 @@ fun main() {
     println("Hello, Kotlin!")
 }
 
+
+Context
+You are given the following Kotlin coroutines program. Do not run it. Reason through its behaviour step by step.
+A custom operator gatedDebounce is defined with the following semantics:
+gatedDebounce(timeoutMs):
+- Maintains a last_forwarded value, initialised to 0
+- When a new value arrives:
+    - If value <= last_forwarded: drop it immediately, no timer is started
+    - If value > last_forwarded: start or reset the debounce timer
+- When the timer fires (timeoutMs has elapsed with no new valid value):
+    - Forward the value downstream
+    - Update last_forwarded to this value
+kotlinimport kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+suspend fun main() = coroutineScope {
+    val upstream = flow {
+        emit(3)          // t = 0 ms
+        delay(40)
+        emit(7)          // t = 40 ms
+        delay(30)
+        emit(5)          // t = 70 ms
+        delay(20)
+        emit(8)          // t = 90 ms
+        delay(160)
+        emit(6)          // t = 250 ms
+        delay(60)
+        emit(9)          // t = 310 ms
+    }
+
+    val result = upstream
+        .gatedDebounce(60)
+        .flatMapLatest { value ->
+            flow {
+                emit(value * 10)
+                delay(80)
+                emit(value * 10 + 1)
+            }
+        }
+        .take(3)
+
+    result.collect { println(it) }
+}
+
+
+Task
+Answer all questions by filling in the output format below. Do not write sentences or explanations — only the tokens specified.
+Question 1 (1 point)
+Which upstream values are forwarded by gatedDebounce(60) and which are dropped? For each dropped value state whether it was dropped by the comparison rule or by the timer reset.
+Question 2a (1 point)
+Has the inner flow for the first forwarded value emitted its second value before the second forwarded value arrives at flatMapLatest?
+Question 2b (1 point)
+What is the state of the inner flow for the first forwarded value when the second forwarded value arrives?
+Question 3 (3 points)
+What is the exact sequence of values printed by collect { println(it) }?
+Question 4a (1 point)
+Change gatedDebounce(60) to gatedDebounce(25). What is the new output sequence?
+Question 4b (1 point)
+With gatedDebounce(25), which upstream values are forwarded downstream?
+Question 4c (2 points)
+With gatedDebounce(25), for which forwarded values is the inner flow cancelled before its second emission?
+
+Output Format
+Fill in every field exactly as shown. No extra text, no sentences.
+Q1: forwarded=<values> | dropped_by_comparison=<values> | dropped_by_timer=<values>
+Q2a: <true|false>
+Q2b: <completed|still_running>
+Q3: <values in order>
+Q4a: <values in order>
+Q4b: <values forwarded>
+Q4c: <values whose inner flow is cancelled before second emission>
+
+
+    Final reference answers:
+Q1: forwarded=8,9 | dropped_by_comparison=6 | dropped_by_timer=3,7,5
+Q2a: true
+Q2b: completed
+Q3: 80,81,90
+Q4a: 70,80,90
+Q4b: 3,7,8,9
+Q4c: 3,7
+
+
+
+
+
+
+
+
+
+
+
+
 You are given the following Kotlin coroutines program. Do not run it. Reason through its behaviour step by step.
 kotlinimport kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
