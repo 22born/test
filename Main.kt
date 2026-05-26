@@ -32,88 +32,40 @@ suspend fun main() = coroutineScope {
 }
 
 Task
-Answer all four questions below. Show your reasoning for each — do not just state a conclusion.
+Answer all questions by filling in the output format below. Do not write sentences or explanations — only the tokens specified.
 Question 1 (1 point)
-The upstream emits values at t=0ms, t=50ms, t=80ms, and t=280ms. With debounce(60) applied, which of these values pass through to flatMapLatest and which are dropped? For each value that passes, state the approximate time it is forwarded downstream.
-Question 2 (2 points)
-When flatMapLatest receives value 3, it starts an inner flow that emits 30, waits 100ms, then emits 31. Value 4 eventually arrives at flatMapLatest. Has the inner flow for value 3 already emitted 31 before value 4 arrives? Show your timing calculation. What does flatMapLatest do to the inner flow for value 3 at the moment value 4 is received?
+Which upstream values pass through debounce(60) and which are dropped?
+Question 2a (1 point)
+Has the inner flow for value 3 emitted 31 before value 4 arrives at flatMapLatest? State the time 31 is emitted and the time value 4 arrives.
+Question 2b (1 point)
+What is the state of the inner flow for value 3 when value 4 arrives? What effect does the cancellation have?
 Question 3 (3 points)
-Based on your answers above, write the exact sequence of values printed by collect { println(it) }, in order. For each value, state the approximate time it is emitted and explain in one sentence why it appears in the output.
-Question 4 (4 points)
-Now change debounce(60) to debounce(25) and reason through the program again from scratch. How does the output sequence change compared to Question 3? For each difference, explain why the change in debounce timeout caused it.
+What is the exact sequence of values printed by collect { println(it) }?
+Question 4a (1 point)
+Change debounce(60) to debounce(25). What is the new output sequence?
+Question 4b (1 point)
+With debounce(25), which upstream values pass through to flatMapLatest?
+Question 4c (2 points)
+With debounce(25), for which values is the inner flow cancelled before its second emission?
 
 Output Format
-Write your answer as a single JSON object with the structure below. Do not include anything outside the JSON. Do not wrap it in markdown code fences.
-json{
-  "q1": {
-    "passes": [
-      { "value": "<int>", "time_ms": "<int>", "reason": "<string>" }
-    ],
-    "dropped": [
-      { "value": "<int>", "reason": "<string>" }
-    ]
-  },
-  "q2": {
-    "31_emitted_before_value4": "<true|false>",
-    "timing_calculation": "<string>",
-    "cancellation_effect": "<string>"
-  },
-  "q3": {
-    "output_sequence": [
-      { "value": "<int>", "time_ms": "<int>", "reason": "<string>" }
-    ]
-  },
-  "q4": {
-    "new_output_sequence": ["<int>"],
-    "differences_from_q3": [
-      { "change": "<string>", "reason": "<string>" }
-    ],
-    "inner_flow_analysis": [
-      { "value": "<int>", "second_emission_emitted": "<true|false>", "reason": "<string>" }
-    ]
-  }
-}
+Fill in every field exactly as shown. No extra text, no sentences.
+Q1: passes=<values> | dropped=<values>
+Q2a: <true|false> | 31_at=<ms> | val4_at=<ms>
+Q2b: <completed|still_running> | cancellation=<no-op|kills_31>
+Q3: <values in order>
+Q4a: <values in order>
+Q4b: <values that pass debounce(25)>
+Q4c: <values whose inner flow is cancelled before second emission>
 
 Reference Answer
-json{
-  "q1": {
-    "passes": [
-      { "value": 3, "time_ms": 140, "reason": "After emit(3) at t=80ms the next emission is at t=280ms, a gap of 200ms which exceeds the 60ms window, so 3 is forwarded at 80+60=140ms." },
-      { "value": 4, "time_ms": 340, "reason": "After emit(4) at t=280ms the upstream completes with no further emissions, so 4 is forwarded at 280+60=340ms." }
-    ],
-    "dropped": [
-      { "value": 1, "reason": "emit(2) arrives at t=50ms, only 50ms after emit(1) at t=0ms, which is within the 60ms window. The debounce timer resets." },
-      { "value": 2, "reason": "emit(3) arrives at t=80ms, only 30ms after emit(2) at t=50ms, which is within the 60ms window. The debounce timer resets again." }
-    ]
-  },
-  "q2": {
-    "31_emitted_before_value4": true,
-    "timing_calculation": "Value 3 is forwarded by debounce at ~t=140ms. The inner flow immediately emits 30, then waits delay(100). So 31 is emitted at ~t=240ms. Value 4 does not arrive at flatMapLatest until ~t=340ms. 240ms < 340ms, so 31 is emitted 100ms before value 4 arrives.",
-    "cancellation_effect": "The inner flow for value 3 has already completed by t=340ms, so when value 4 arrives flatMapLatest has nothing to cancel. The cancellation is a no-op."
-  },
-  "q3": {
-    "output_sequence": [
-      { "value": 30, "time_ms": 140, "reason": "Value 3 passes debounce at ~140ms and the inner flow immediately emits 3*10=30." },
-      { "value": 31, "time_ms": 240, "reason": "The inner flow for value 3 waits delay(100) then emits 3*10+1=31." },
-      { "value": 40, "time_ms": 340, "reason": "Value 4 passes debounce at ~340ms and the new inner flow immediately emits 4*10=40." },
-      { "value": 41, "time_ms": 440, "reason": "The inner flow for value 4 waits delay(100) then emits 4*10+1=41. take(4) now has 4 items and terminates collection." }
-    ]
-  },
-  "q4": {
-    "new_output_sequence": [10, 20, 30, 31],
-    "differences_from_q3": [
-      { "change": "Values 1 and 2 now pass debounce (were dropped in Q3)", "reason": "debounce(25) has a 25ms window. The gap between emit(1) and emit(2) is 50ms > 25ms, so 1 passes. The gap between emit(2) and emit(3) is 30ms > 25ms, so 2 passes." },
-      { "change": "Output starts with 10 and 20 instead of 30 (Q3 started at 30)", "reason": "Values 1 and 2 now pass debounce and each triggers an inner flow that immediately emits 10 and 20 respectively before being cancelled." },
-      { "change": "Values 40 and 41 no longer appear in the output (they appeared in Q3)", "reason": "take(4) is satisfied by 10, 20, 30, 31 before the inner flow for value 4 ever emits 40 or 41." }
-    ],
-    "inner_flow_analysis": [
-      { "value": 1, "second_emission_emitted": false, "reason": "Value 1 passes at ~t=25ms and inner flow emits 10 immediately. 11 would be due at ~t=125ms but value 2 arrives at flatMapLatest at ~t=75ms, cancelling the inner flow mid-delay." },
-      { "value": 2, "second_emission_emitted": false, "reason": "Value 2 passes at ~t=75ms and inner flow emits 20 immediately. 21 would be due at ~t=175ms but value 3 arrives at flatMapLatest at ~t=105ms, cancelling the inner flow mid-delay." },
-      { "value": 3, "second_emission_emitted": true, "reason": "Value 3 passes at ~t=105ms and inner flow emits 30 immediately. 31 is due at ~t=205ms. Value 4 does not arrive until ~t=305ms, so the inner flow completes and 31 is emitted." },
-      { "value": 4, "second_emission_emitted": true, "reason": "Value 4 passes at ~t=305ms and inner flow emits 40 at ~t=305ms and 41 at ~t=405ms. However take(4) is already satisfied after 31 and collection is terminated before 40 is emitted." }
-    ]
-  }
-}
+Q1: passes=3,4 | dropped=1,2
+Q2a: true | 31_at=240ms | val4_at=340ms
+Q2b: completed | cancellation=no-op
+Q3: 30,31,40,41
+Q4a: 10,20,30,31
+Q4b: 1,2,3,4
+Q4c: 1,2
 
 
 //\\\\\\\\
