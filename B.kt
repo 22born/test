@@ -82,3 +82,57 @@ where:
 State(node, lastDefender)
 
 This prevents the BFS from incorrectly discarding valid paths.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Issue in the Original Code
+
+The original implementation used:
+
+val visited = mutableSetOf<String>()
+
+which means BFS only tracked the current node.
+
+However, the legality of future moves depends on the last defender who rotated. Therefore, reaching the same node with different lastDefender values can produce different valid next moves.
+
+The original code incorrectly treated all visits to the same node as identical and could prematurely discard valid paths.
+
+What Was Fixed
+
+The visited state was changed from:
+
+mutableSetOf<String>()
+
+to:
+
+mutableSetOf<State>()
+
+where:
+
+data class State(
+    val node: String,
+    val lastDefender: String?
+)
+
+This ensures that BFS tracks the complete state:
+
+(node, lastDefender)
+
+instead of just:
+
+node
+
+As a result, the algorithm can correctly revisit the same node when it is reached with a different lastDefender, allowing it to explore valid paths that the original implementation would incorrectly prune.
