@@ -1,67 +1,84 @@
-Context
+Correct fix
+import java.util.ArrayDeque
 
-A basketball analytics system models a triangle defence as a directed graph.
+data class Edge(val next: String, val defender: String)
 
-Each node represents a defensive configuration:
+// FIX: visited state must include both the current node and the last defender.
+// The same node can have different legal next moves depending on lastDefender.
+data class State(
+    val node: String,
+    val lastDefender: String?
+)
 
-(ballZone, topDefender, leftDefender, rightDefender)
+data class QueueItem(
+    val node: String,
+    val distance: Int,
+    val lastDefender: String?
+)
 
-Each directed edge represents a legal defensive rotation and stores the identifier of the defender who performed the rotation.
+fun minRotationsToTrap(
+    graph: Map<String, List<Edge>>,
+    start: String,
+    trapNodes: Set<String>
+): Int {
+    val queue = ArrayDeque<QueueItem>()
 
-A transition is valid only if:
+    // FIX: Do not store only node names in visited.
+    // Store State(node, lastDefender), because lastDefender affects future moves.
+    val visited = mutableSetOf<State>()
 
-Exactly one defender rotates.
-The ball moves to an adjacent zone.
-The resulting formation remains a valid triangle defence.
-The same defender cannot rotate twice consecutively.
+    queue.add(QueueItem(start, 0, null))
+    visited.add(State(start, null))
 
-The system must determine the minimum number of rotations required to reach any defensive configuration that forms a successful trap.
+    while (queue.isNotEmpty()) {
+        val current = queue.removeFirst()
 
-The following Kotlin implementation is currently used:
+        if (current.node in trapNodes) {
+            return current.distance
+        }
 
+        for (edge in graph[current.node].orEmpty()) {
 
+            // Rule: the same defender cannot rotate twice in a row.
+            if (edge.defender == current.lastDefender) {
+                continue
+            }
 
-Task
+            // FIX: next state includes the defender who just rotated.
+            val nextState = State(edge.next, edge.defender)
 
-Review the implementation and determine whether it is correct.
+            if (nextState !in visited) {
+                visited.add(nextState)
 
-If you find a bug:
+                queue.add(
+                    QueueItem(
+                        node = edge.next,
+                        distance = current.distance + 1,
+                        lastDefender = edge.defender
+                    )
+                )
+            }
+        }
+    }
 
-Explain the root cause.
-Describe why the current logic can fail.
-Provide a corrected Kotlin implementation.
-Explain the state representation that BFS should use.
-State the time and space complexity of the corrected solution.
-Expected Answer Format
+    return -1
+}
+Explanation
 
-The answer should contain the following sections:
+The bug is that the original code used:
 
-1. Bug Found?
-   - Yes / No
+val visited = mutableSetOf<String>()
 
-2. Root Cause
-   - Explanation
+That only tracks the node.
 
-3. Example Failure Scenario
-   - Brief example showing why the bug occurs
+But the legal next moves depend on who rotated last, so the same node reached after defender A is different from the same node reached after defender B.
 
-4. Correct State Representation
-   - What information must be stored in BFS state
+The fix is:
 
-5. Corrected Kotlin Code
-   - Complete fixed implementation
+val visited = mutableSetOf<State>()
 
-6. Complexity Analysis
-   - Time Complexity:
-   - Space Complexity:
-Evaluation Criteria
+where:
 
-A solution is considered correct only if it explicitly identifies that:
+State(node, lastDefender)
 
-(node, lastDefender)
-
-is the true BFS state, and that using only
-
-node
-
-inside visited can incorrectly prune valid paths. Any fix that does not address this issue should be considered incorrect.
+This prevents the BFS from incorrectly discarding valid paths.
