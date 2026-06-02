@@ -1,59 +1,74 @@
+# Android Offline Sync Fix
 
-You are working in a repository located at `environment/`.
+The repository contains an Android offline-first notes application with a synchronization system.
 
-The repository contains an Android offline-first notes synchronization system.
+## Problem
 
 Users report that notes edited offline sometimes disappear, revert unexpectedly, or become inconsistent after reconnecting to the network.
 
-Your task is to inspect the repository, infer the intended synchronization behavior from the available artifacts, identify the root causes of the issues, and implement a fix.
+The synchronization system is not behaving correctly under certain conditions, leading to data loss, stale state, and inconsistent results between local and remote data.
 
-Requirements may be distributed across source code, documentation, configuration files, and sample scenarios.
+Your task is to inspect the repository, understand the intended synchronization behavior, identify the root causes of the issues, and implement fixes that make the synchronization system reliable.
 
-Constraints:
+## Task
 
-* Do not modify documentation or sample scenario files.
-* Do not bypass synchronization logic.
-* Preserve existing functionality where possible.
-* Your implementation should generalize beyond the visible examples.
+Analyze the synchronization system and implement the necessary fixes.
 
-Your solution will be evaluated using hidden tests that are not present in the repository.
+The solution should:
 
-The hidden evaluation covers:
+- Preserve the offline-first architecture.
+- Maintain eventual consistency between local and remote state.
+- Handle synchronization failures safely.
+- Correctly process local and remote changes.
+- Preserve user data and intent during synchronization.
 
-* offline edits
-* conflict resolution
-* mutation ordering
-* retries
-* deletes
-* partial failures
-* synchronization correctness
+## Constraints
 
-Expected output:
+- Do not bypass synchronization logic.
+- Work within the existing architecture.
+- Preserve existing functionality where possible.
+- Maintain compatibility with the existing server API.
+- Do not introduce new external dependencies.
 
-Modified files: <relative file paths>
+## Expected Behavior
 
+After the fix:
 
-  The problem is about an offline-first Android notes app with a broken synchronization system.
-
-Users can edit notes while offline. These edits are stored locally and later synchronized with a remote server when connectivity returns. However, the current implementation contains several subtle bugs that can cause:
-
-Offline edits to be lost.
-Remote data to overwrite unsynced local changes.
-Duplicate updates during retries.
-Deletes to be undone by stale server data.
-Pending mutations to disappear after network failures.
-Incorrect conflict resolution due to timestamp-based logic.
-
-The model's task is to inspect the repository, understand how synchronization is intended to work, identify the bugs in the sync pipeline, conflict resolution, and mutation handling, and implement fixes that make the synchronization system reliable.
-
-In essence, this is a distributed state consistency problem disguised as an Android sync engine. The challenge is reasoning about the lifecycle of local changes, server state, retries, ordering, and conflict resolution rather than simply implementing an Android API.
+1. Offline edits are preserved and synchronize correctly when connectivity is restored.
+2. Local changes are not incorrectly overwritten during synchronization.
+3. Retries do not create inconsistent or duplicate results.
+4. Synchronization remains reliable across transient failures.
+5. Concurrent modifications are handled consistently.
+6. User data is not lost during synchronization.
 
 
 
 
 
+environment/
+└── app/src/main/java/com/example/notes/
+    ├── model/
+    │   ├── Note.kt
+    │   ├── NoteDto.kt
+    │   └── MutationType.kt
+    │
+    ├── db/
+    │   ├── NoteEntity.kt
+    │   ├── PendingMutationEntity.kt
+    │   ├── NoteDao.kt
+    │   └── PendingMutationDao.kt
+    │
+    ├── api/
+    │   ├── NotesApi.kt
+    │   └── FakeNotesApi.kt
+    │
+    ├── repo/
+    │   └── NotesRepository.kt
+    │
+    └── sync/
+        ├── SyncManager.kt
+        ├── ConflictResolver.kt
+        ├── MutationQueue.kt
+        └── SyncResult.kt
 
 
-
-
-  
