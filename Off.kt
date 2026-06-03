@@ -1,3 +1,193 @@
+Yes. Here are the test cases in plain text form.
+
+
+
+
+
+
+Mutation sorting test
+
+Provide mutations in an intentionally shuffled order. The expected result should prove that the implementation sorted by epoch, then sourceRank, then original input index before applying them.
+
+
+
+
+
+
+Upsert existing node test
+
+Start with a tree that already contains a node such as sync with value "wifi". Apply an upsert to the same path with value "all". The expected result is that the existing node’s value changes to "all" and no duplicate node is created.
+
+
+
+
+
+
+Upsert missing path test
+
+Apply an upsert to a path where some intermediate nodes do not exist. The implementation should create all missing nodes, assign null to intermediate nodes, and assign the provided value only to the final node.
+
+
+
+
+
+
+Upsert relocates existing node test
+
+Start with a node already present in one part of the tree. Apply an upsert targeting the same node id under a different parent. The expected result is that the node is moved to the new location, its value is updated, and it no longer exists in the old location.
+
+
+
+
+
+
+Basic move test
+
+Move an existing node from one valid path to another valid parent path. The expected result is that the node appears under the new parent at the requested index and is removed from its original location.
+
+
+
+
+
+
+Move missing source test
+
+Apply a move where the source path does not exist. The expected result is that the tree remains unchanged.
+
+
+
+
+
+
+Move creates destination parent test
+
+Apply a move where the source node exists but the destination parent path does not. The implementation should create the missing destination path, then move the source node under it.
+
+
+
+
+
+
+Move into own descendant test
+
+Attempt to move a node into one of its own descendants. The expected result is that the move is ignored and the tree remains unchanged.
+
+
+
+
+
+
+Move index clamping test
+
+Apply moves with invalid indices, such as a negative index or an index larger than the child count. Negative indices should insert at the beginning. Too-large indices should insert at the end.
+
+
+
+
+
+
+Move within same parent test
+
+Move a node from one index to another index under the same parent. The expected result should be based on removing the node first, then inserting it at the clamped destination index. This catches incorrect index handling.
+
+
+
+
+
+
+Delete leaf node test
+
+Delete a node with no children. The expected result is that only that node is removed and the rest of the tree remains unchanged.
+
+
+
+
+
+
+Delete subtree test
+
+Delete a node that has descendants. The expected result is that the node and all of its descendants are removed.
+
+
+
+
+
+
+Delete missing path test
+
+Apply a delete to a path that does not exist. The expected result is that the tree remains unchanged.
+
+
+
+
+
+
+Delete root ignored test
+
+Apply a delete targeting the root node. The expected result is that the root is not deleted and the tree remains unchanged.
+
+
+
+
+
+
+Move before delete conflict test
+
+Start with a node inside a subtree that will later be deleted. First move that node out of the subtree, then delete the original subtree. The expected result is that the moved node survives because it was relocated before the delete happened.
+
+
+
+
+
+
+Delete before move conflict test
+
+Use the same setup as the previous test, but apply the delete before the move. The expected result is that the move is ignored because the source node no longer exists.
+
+
+
+
+
+
+Conflicting upserts to same node test
+
+Apply multiple upserts targeting the same node id in different locations. The expected result is that only one copy of the node exists, located according to the latest mutation in replay order, with the latest value.
+
+
+
+
+
+
+Sibling order preservation test
+
+Start with several siblings. Apply a mutation that affects only one of them. The expected result is that unaffected siblings keep their original relative order.
+
+
+
+
+
+
+Immutability test
+
+Keep the original input tree and compare it after calling the function. The expected result is that the original tree has not changed, even though the returned tree reflects the mutations.
+
+
+
+
+
+
+Deep tree stress test
+
+Use a very deeply nested path, such as hundreds or thousands of nodes. Apply an upsert, move, or delete deep in the tree. The expected result is correct behavior without crashing or corrupting the path.
+
+
+
+
+
+
+
+
+
 
 data class SettingNode(
     val id: String,
