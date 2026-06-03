@@ -1,3 +1,90 @@
+
+data class SettingNode(
+    val id: String,
+    val value: String?,
+    val children: List<SettingNode>
+)
+
+sealed class Mutation {
+    data class Upsert(
+        val path: List<String>,
+        val value: String?,
+        val epoch: Long,
+        val sourceRank: Int
+    ) : Mutation()
+
+    data class Move(
+        val fromPath: List<String>,
+        val toParentPath: List<String>,
+        val newIndex: Int,
+        val epoch: Long,
+        val sourceRank: Int
+    ) : Mutation()
+
+    data class Delete(
+        val path: List<String>,
+        val epoch: Long,
+        val sourceRank: Int
+    ) : Mutation()
+}
+
+Context
+An Android application stores its settings hierarchy as a tree. While offline, multiple subsystems may independently generate mutations against the tree. When synchronization begins, all mutations must be replayed to reconstruct the final state.
+Each node has a globally unique identifier. Mutations reference nodes using paths within the current tree structure.
+The required data structures and function signature are provided in the starter code.
+Task
+Implement the mutation replay engine.
+Given an initial tree and a list of mutations, return the final tree after replaying all mutations.
+Before replaying, mutations must be sorted by:
+epoch ascending
+sourceRank ascending
+original position in the input list ascending
+Mutations are then applied sequentially in that order.
+Rules
+Upsert
+Creates any missing nodes along the target path.
+Newly created intermediate nodes must have value = null.
+The final node in the path must receive the provided value.
+Node identifiers are globally unique across the tree.
+If a node with the target identifier already exists elsewhere, it must not be duplicated.
+Move
+Relocates the node at the source path.
+If the source path does not exist, ignore the mutation.
+If the destination parent path does not exist, create it.
+A node may not be moved into its own descendant subtree.
+Clamp insertion indices to the valid range.
+Delete
+Removes the node at the target path and all of its descendants.
+If the target path does not exist, ignore the mutation.
+Deleting the root node has no effect.
+Ordering
+Preserve existing sibling order whenever possible.
+Newly created nodes are appended to the end of their parent's children.
+If an existing node is relocated due to an upsert, append it to the end of the destination parent's children.
+Immutability
+Do not modify the input tree.
+Return the final reconstructed tree after all mutations have been applied.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 The problem asks the model to simulate how an Android app would rebuild a nested UI/settings tree after receiving offline edits from different sources. Each edit is a mutation: create/update, move, or delete. The hard part is that mutations use paths, but nodes have unique identities, so an upsert can secretly mean “move this existing node here and update it,” not “create a duplicate.”
 Expected output is the final immutable SettingNode tree after sorting and applying all mutations deterministically.
 Prompt
