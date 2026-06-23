@@ -1,3 +1,47 @@
+## 3. Behavioural Requirements
+
+Implement all TODO functions.
+
+`simulateTick(old, dt)`
+Return the next `State` using the physics equations below:
+
+```text
+speed = old.velocity.magnitude()
+dragForce = old.velocity * (-PhysicsConfig.dragCoefficient * speed)
+magnusForce = cross(old.spin, old.velocity) * PhysicsConfig.magnusCoefficient
+acceleration = PhysicsConfig.gravity + (dragForce + magnusForce) / PhysicsConfig.mass
+nextVelocity = old.velocity + acceleration * dt
+nextPosition = old.position + nextVelocity * dt
+nextSpin = old.spin * exp(-PhysicsConfig.spinDecay * dt)
+```
+
+`classifyCrossing(previous, current)`
+Check the straight path from `previous` to `current`. Return the first event on that path, or `null` if there is none.
+
+Possible returned events:
+
+```text
+BLOCKED_BY_WALL: reaches x = 9.0 inside the wall rectangle
+GOAL: reaches x = 25.0 inside the goal rectangle
+MISS: reaches x = 25.0 outside the goal rectangle
+HIT_GROUND: reaches z = 0.0 while moving downward before the goal
+```
+
+The returned `Crossing` must include the event result, the event position, and `alpha`, where `0.0` means `previous` and `1.0` means `current`.
+
+`simulateKick(kick)`
+Start at `(0.0, 0.0, 0.0)` with the kick’s initial velocity and spin. Keep calling `simulateTick` and `classifyCrossing` until the kick ends. Return `TIMEOUT` if no event happens before `PhysicsConfig.maxTime`.
+
+`simulateManyKicks(kicks)`
+Use Kotlin coroutines to simulate the kicks. Return one result per kick, sorted by `kickId`.
+
+Repeated runs with the same input must return exactly the same results.
+
+
+
+
+
+
 You are given a Kotlin programming task. Complete the TODO functions and return only the completed Kotlin source code.
 
 Do not include explanations, markdown, comments about your approach, or prose outside the code.
