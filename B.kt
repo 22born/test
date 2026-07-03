@@ -1,60 +1,102 @@
-The problem is:
+# Context
 
-Designing a practical floor plan requires multiple iterations with an architect, and homeowners struggle to visualize, compare, and improve layouts before construction.
-Homeowners struggle to evaluate whether a proposed floor plan is the best use of their plot before spending thousands on construction.
+A mobile dashboard builder represents a layout as a slicing tree.
 
-Who has this problem?
+A leaf is a widget. An internal node is a cut.
 
-Not everyone.
+A vertical cut places the first child left of the second:
 
-Let's rank them.
+width = firstWidth + gap + secondWidth
+height = max(firstHeight, secondHeight)
 
-1. Homeowners 
+A horizontal cut places the first child above the second:
 
-Example:
+width = max(firstWidth, secondWidth)
+height = firstHeight + gap + secondHeight
 
-"I'm buying a 40x60 plot."
+A widget may be rotated only if `rotatable == true`.
 
-"I need 3 bedrooms."
+The goal is to choose widget orientations so the final layout has the minimum area while satisfying:
 
-"My architect gave me one plan."
+minAspect <= width / height <= maxAspect
 
-"I want to see better alternatives."
+The function must also return each widget’s coordinates. The root starts at `(0, 0)`.
 
-This is your best customer.
+For a vertical cut:
+- first child starts at `(x, y)`
+- second child starts at `(x + firstWidth + gap, y)`
 
-2. People renovating 
+For a horizontal cut:
+- first child starts at `(x, y)`
+- second child starts at `(x, y + firstHeight + gap)`
 
-They already have a plan.
+# Task
 
-They wonder:
+Implement:
 
-Can I move the kitchen?
-
-Can I add another bedroom?
-
-Very high pain.
-
-3. Architects 
-
-They already know how to design.
-
-They don't need AI.
-
-They need:
-
-faster iterations
-client communication
-inspiration
-
-Different product.
-
-4. Real estate developers 
-
-Possible later.
-
-Not MVP.
+```kotlin
+fun optimizeLayout(
+    root: LayoutNode,
+    minAspect: Double,
+    maxAspect: Double
+): OptimizedLayout?
 
 
-What problem would the app solve?
-Help users explore and compare better floor plan options before committing to construction.
+
+  Return null if no valid layout exists.
+Required Types
+sealed class LayoutNode
+
+data class WidgetNode(
+    val id: String,
+    val width: Int,
+    val height: Int,
+    val rotatable: Boolean
+) : LayoutNode()
+
+data class CutNode(
+    val type: CutType,
+    val gap: Int,
+    val first: LayoutNode,
+    val second: LayoutNode
+) : LayoutNode()
+
+enum class CutType {
+    VERTICAL,
+    HORIZONTAL
+}
+
+data class RectSize(
+    val width: Int,
+    val height: Int
+)
+
+data class WidgetPlacement(
+    val id: String,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int
+)
+
+data class OptimizedLayout(
+    val width: Int,
+    val height: Int,
+    val area: Long,
+    val placements: List<WidgetPlacement>
+)
+Requirements
+Return the minimum-area valid layout.
+If tied by area, choose smaller width.
+If still tied, choose smaller height.
+Every widget ID appears at most once.
+Every widget must be placed exactly once.
+Widgets must not overlap.
+Widget dimensions are positive.
+Gaps are non-negative.
+Use only Kotlin standard library.
+Constraints
+1 <= number of widgets <= 16
+1 <= widget width, widget height <= 10_000
+0 <= gap <= 10_000
+0.1 <= minAspect <= maxAspect <= 10.0
