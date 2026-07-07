@@ -1,3 +1,27 @@
+You are given a Jetpack Compose component called AsyncStickyFeed. It displays a feed in a LazyColumn with sticky date headers. Each feed item may contain an async preview whose height is loaded later.
+The current implementation has bugs when items are inserted, removed, reordered, or when async preview heights finish loading. It also mishandles non-contiguous date sections and row expansion state.
+You may change the internal implementation, but keep the public AsyncStickyFeed API unchanged.
+Assume FeedItem.id values are unique.
+
+
+
+The fixed component must satisfy these visible behaviors:
+The feed must preserve the exact input order.
+Headers must represent consecutive date sections, not global groups of all items with the same date label.
+Sticky headers must remain associated with the correct section.
+Rows must keep stable identity when items are inserted, removed, or reordered.
+Row expansion state must stay with the same logical item across insertions, removals, and reorders.
+Preview heights may complete one at a time and in any order.
+Async preview results from an old items list must not affect the current list.
+Preview height changes above the viewport must not unexpectedly change the visible anchor.
+Removing or inserting items above the viewport must preserve the same visible logical item when possible.
+Header height may vary with text length, density, and font scale.
+The component must behave correctly under non-default density and font scale.
+Compose state must not be updated from a background thread.
+
+
+
+
 Preview heights may complete one at a time and in any order. Each completed height may change the measured height of a row.
 
 Rows can be expanded or collapsed by tapping them. Expansion state must stay with the same logical item across insertions, removals, and reorders.
