@@ -1,182 +1,156 @@
-1. Insert above viewport preserves logical anchor
-Purpose: verifies stable keys and scroll anchoring when new rows are inserted before the visible content.
-Scenario:
-1. Render 40 items.
-2. Scroll until row item-25 is visible and near the top of the viewport.
-3. Record boundsInRoot.top for row-item-25.
-4. Insert 5 new items before item-1.
-5. Wait for recomposition.
-Assert:
-- row-item-25 still exists.
-- row-item-25 remains visible.
-- row-item-25 top position is approximately unchanged.
-- Its section header is still the correct date header.
-Do not assert only that firstVisibleItemIndex is unchanged. It may change because headers and inserted rows affect entry indices.
-2. Remove above viewport preserves logical anchor
-Purpose: verifies the inverse of insertion anchoring.
-Scenario:
-1. Render 40 items.
-2. Scroll until row item-25 is visible and near the top.
-3. Record row-item-25 boundsInRoot.top.
-4. Remove several rows before item-25.
-5. Wait for recomposition.
-Assert:
-- row-item-25 remains visible.
-- row-item-25 top position is approximately unchanged.
-- The viewport does not jump to item-20, item-30, or another section.
-This is valid because stable keys are supposed to preserve logical item identity across add/remove before the current visible item. �
-Android Developers
-3. Non-contiguous date sections preserve input order
-Purpose: catches incorrect groupBy { it.dateLabel } solutions.
-Scenario:
-Input:
-Today: A
-Yesterday: B
-Today: C
-Assert render order:
-Header Today
-Row A
-Header Yesterday
-Row B
-Header Today
-Row C
-This test should fail if the implementation globally groups all Today items together.
-4. Alternating sections produce separate headers
-Purpose: verifies repeated date labels create separate consecutive sections.
-Scenario:
-Today: A
-Yesterday: B
-Today: C
-Yesterday: D
-Assert:
-- There are four headers.
-- The headers appear in this order:
-  Today, Yesterday, Today, Yesterday.
-- Rows appear in exact input order:
-  A, B, C, D.
-This is similar to test 3, but stronger because it catches implementations that special-case only one repeated section.
-5. Expansion state follows item after insertion
-Purpose: catches missing or incorrect stable row keys.
-Scenario:
-1. Render rows A, B, C.
-2. Tap row B.
-3. Verify "Expanded details for B" is visible.
-4. Insert row X above A.
-Assert:
-- Row B is still expanded.
-- Rows A, C, and X are not expanded.
-- Expansion state did not move to row A or row X.
-This should test logical item identity, not position.
-6. Expansion state follows item after reorder
-Purpose: catches position-based remembered state.
-Scenario:
-1. Render rows A, B, C.
-2. Tap row B to expand it.
-3. Reorder items to C, A, B.
-Assert:
-- B remains expanded in its new position.
-- C and A are not expanded.
-- Render order is C, A, B.
-This test is important because insertion/removal alone may not catch all bad key strategies.
-7. Incremental async height growth above viewport preserves logical anchor
-Purpose: verifies scroll anchoring during repeated measurement changes above the viewport.
-Corrected version of the test:
-1. Render 40 rows with previews initially using the 48.dp placeholder.
-2. Scroll until row item-25 is visible near the top.
-3. Record row-item-25 boundsInRoot.top.
-4. Complete preview height for item-1, growing from 48.dp to 200.dp.
-5. Assert row-item-25 is still visually anchored.
-6. Repeat for item-5, item-10, and item-15, one completion at a time.
-Assert after each completion:
-- row-item-25 remains visible.
-- row-item-25 top position remains within a small tolerance.
-- The viewport does not drift cumulatively after multiple completions.
-- The sticky header still corresponds to item-25’s section.
-Do not assert exact raw index equality. Assert the same logical item and approximate visual position.
-8. Incremental async height shrink above viewport preserves logical anchor
-Purpose: catches solutions that only compensate for growth, not shrinkage.
-Scenario:
-1. Start with rows above the viewport using loaded preview heights, for example 200.dp.
-2. Scroll until row item-25 is visible near the top.
-3. Record row-item-25 boundsInRoot.top.
-4. Update/reload item-1, item-5, item-10, and item-15 so their preview heights shrink to 48.dp, one at a time.
-Assert after each shrink:
-- row-item-25 remains visible.
-- row-item-25 top position remains approximately stable.
-- The list does not jump backward to earlier rows.
-This is a real edge case because offset compensation must handle negative height deltas.
-9. Stale async result ignored after items change
-Purpose: verifies LaunchedEffect cancellation/restart behavior and stale-result protection. Compose cancels a LaunchedEffect coroutine when it leaves composition or when its keys change, so the test should force an old load to finish after a new item list is already active. �
-Android Developers
-Scenario:
-1. Render old items with slow preview loaders.
-2. Replace the list with new items before old preview loaders finish.
-3. Complete old loaders.
-4. Complete new loaders.
-Assert:
-- Old row titles are not visible.
-- Old preview heights are not applied to new rows.
-- New rows use only their own preview heights.
-- No stale expanded state remains for removed old rows.
-This should use controllable deferred/completable loaders, not real delay, so the test is deterministic.
-10. Item loses previewId clears stale height
-Purpose: catches stale preview-height state keyed only by item id.
-Scenario:
-1. Render item A with previewId = preview-a.
-2. Complete preview-a height as 240.dp.
-3. Recompose item A with previewId = null.
-Assert:
-- preview-A no longer exists.
-- Row A does not reserve the old 240.dp preview height.
-- Row A still renders its title and expansion behavior normally.
-This is a high-value edge case because the item id stays the same while the preview identity changes.
-11. Same item id with changed previewId does not reuse old height
-Purpose: catches a more subtle stale-cache bug than test 10.
-Scenario:
-1. Render item A with previewId = preview-old.
-2. Complete preview-old height as 240.dp.
-3. Recompose item A with previewId = preview-new.
-4. Before preview-new loads, row A should use the placeholder height.
-5. Complete preview-new height as 80.dp.
-Assert:
-- The old 240.dp height is not reused for preview-new.
-- The row uses placeholder height while preview-new is pending.
-- After preview-new completes, the row uses 80.dp.
-This is worth keeping if your solution stores loaded heights by item.id.
-12. Non-default density and font scale with anchoring
-Purpose: catches dp/px rounding assumptions and font-scale-sensitive header height issues.
-Scenario:
-CompositionLocalProvider(
-    LocalDensity provides Density(
-        density = 2.75f,
-        fontScale = 1.3f
-    )
+Async Resource Memoizer
+Context
+In a Kotlin/Android app, many coroutines may request the same resource at the same time, such as a config value, auth token, or profile blob.
+You need a small coroutine-safe memoizer that shares concurrent work, caches successful results, and handles invalidation correctly.
+Task
+Implement:
+class AsyncMemo<K, V>(
+    private val scope: CoroutineScope
 ) {
-    AsyncStickyFeed(...)
+    suspend fun get(
+        key: K,
+        loader: suspend () -> V
+    ): V
+
+    suspend fun invalidate(key: K)
+
+    suspend fun clear()
 }
-Run either test 1 or test 7 under this density/font scale.
+Requirements
+Concurrent calls for the same key should share one ongoing load when none of them is separated by a completed invalidation or clear.
+Calls for different keys must not block or interfere with each other unnecessarily.
+Cancelling one caller must not cancel the result for other callers waiting on the same key.
+Successful loads must be reused by later calls for the same key.
+Failed loads must be reported to current callers, but later calls must be able to retry.
+After invalidate(key) completes, later get(key) calls must not return older cached data.
+After invalidate(key) completes, later get(key) calls must not attach to older unfinished work for that key.
+After clear() completes, later get(...) calls must not return any older cached data.
+After clear() completes, later get(...) calls must not attach to any older unfinished work.
+Work that began before invalidation may still finish, but it must not affect later calls if it is no longer current.
+The implementation must behave correctly under concurrent calls from multiple coroutine dispatchers.
+The implementation must not block threads while waiting for asynchronous work.
+Output Format
+Return:
+Full Kotlin implementation.
+Brief explanation of the concurrency behavior.
+Important coroutine tests or pseudocode tests.
+Final test cases
+1. Concurrent same-key calls share one load
+Start many concurrent get("a") calls with a paused loader.
 Assert:
-- The same logical anchor row remains visually stable.
-- Consecutive headers still render in input order.
-- Sticky header association remains correct.
-This should not require exact pixel equality. Use a tolerance.
-13. Compose state not updated from background thread
-This one is not a good black-box UI test. Keep it as a code-review/static-evaluation requirement.
-Correct evaluator check:
-Fail solutions that mutate Compose state inside launch(Dispatchers.IO) or withContext(Dispatchers.IO).
-
-Accept solutions that do background work in IO and return to the composition coroutine before assigning Compose state.
-Bad pattern:
-launch(Dispatchers.IO) {
-    val height = loadPreviewHeight(previewId)
-    previewHeights = previewHeights + (item.id to height)
-}
-Good pattern:
-launch {
-    val height = withContext(Dispatchers.IO) {
-        loadPreviewHeight(previewId)
-    }
-
-    previewHeights = previewHeights + (item.id to height)
-}
-Do not count this as one of the main UI tests.
+- The loader runs exactly once.
+- All callers receive the same result.
+- A later get("a") returns the cached result without running the loader again.
+2. Different keys load independently
+Start a blocked get("a"), then start get("b").
+Assert:
+- get("b") completes without waiting for get("a").
+- The loader for "a" and the loader for "b" each run once.
+3. Caller cancellation does not cancel shared work
+Start two callers waiting on get("a"). Cancel one caller while the shared load is still running.
+Assert:
+- The second caller still receives the result.
+- The shared loader is not cancelled.
+- The result is cached for later get("a") calls.
+4. Successful load is cached
+Call get("a") and let it return "value-1". Then call get("a") again with a different loader that would return "value-2".
+Assert:
+- The second call returns "value-1".
+- The second loader does not run.
+5. Loader failure is shared but not cached
+Start multiple concurrent get("a") calls whose shared loader throws.
+Assert:
+- All current callers receive the same failure.
+- A later get("a") invokes the loader again.
+- If the retry succeeds, the successful value is cached.
+6. Invalidate removes cached value
+Cache "old" for key "a". Call invalidate("a"). Then call get("a") with a loader returning "new".
+Assert:
+- The later get("a") returns "new".
+- The old cached value is not returned after invalidate completes.
+7. Invalidate during in-flight load prevents stale reuse
+Start get("a") with loader A paused. Call invalidate("a"). Then start another get("a") with loader B.
+Assert:
+- The second get("a") does not attach to loader A.
+- Loader B runs separately.
+- If loader A completes with "old" and loader B completes with "new", later get("a") returns "new".
+8. Old waiter may complete after invalidation
+Start get("a") with loader A paused. Call invalidate("a") before loader A completes. Then complete loader A.
+Assert:
+- The original waiter may receive loader A's result.
+- A later get("a") must not receive loader A's result from cache.
+9. Clear removes all cached values
+Cache values for "a" and "b". Call clear(). Then call get("a") and get("b") with new loaders.
+Assert:
+- Both new loaders run.
+- No cached value from before clear is returned.
+10. Clear during multiple in-flight loads prevents stale reuse
+Start paused loads for "a" and "b". Call clear(). Start new gets for both keys.
+Assert:
+- New gets do not attach to the old loads.
+- Old load completions do not populate the cache.
+- Later gets return only the newer results.
+11. Get after invalidate cannot observe old cache
+Cache a value for "a". Call invalidate("a") and wait for it to return. Then call get("a").
+Assert:
+- The post-invalidate call never returns the old cached value.
+12. Get after clear cannot observe old cache
+Cache values for several keys. Call clear() and wait for it to return. Then call get(...) for those keys.
+Assert:
+- No post-clear call returns any pre-clear cached value.
+13. Invalidate racing with loader success
+Use deterministic ordering for both cases.
+Case A:
+loader completes before invalidate takes effect
+Assert:
+- invalidate removes the completed value.
+- later get("a") runs a new loader.
+Case B:
+invalidate completes before loader result is committed
+Assert:
+- late loader result is not cached.
+- later get("a") runs a new loader.
+14. Clear racing with loader success
+Same as Test 13, but with clear() instead of invalidate(key).
+Assert:
+- Results completed before clear are removed by clear.
+- Results completed after clear do not repopulate the cache.
+- Later gets run new loaders.
+15. Repeated invalidate/get cycles do not resurrect stale values
+Repeat many times:
+1. Start get("a") with an old paused loader.
+2. Call invalidate("a").
+3. Start a new get("a").
+4. Complete the old loader.
+5. Complete the new loader.
+Assert:
+- The final cached value always belongs to the latest valid load.
+- No post-invalidate get returns an old value.
+16. Repeated clear/get cycles do not resurrect stale values
+Repeat many times across multiple keys:
+1. Start old paused loads.
+2. Call clear().
+3. Start new loads.
+4. Complete old loads.
+5. Complete new loads.
+Assert:
+- Old completions never repopulate the cache.
+- Later gets return only values from after the latest clear.
+17. Cancellation plus invalidation
+Start two callers for get("a"). Cancel one caller. Then call invalidate("a") before the loader completes.
+Assert:
+- The remaining old waiter may still receive the old result.
+- Later get("a") does not receive that old result from cache.
+- Caller cancellation and invalidation are handled as separate concepts.
+18. Multi-dispatcher stress test
+Run many coroutines across different dispatchers. Randomly call:
+- get(key)
+- invalidate(key)
+- clear()
+- cancel some callers
+Assert:
+- No deadlocks or hangs.
+- No stale value is returned after a completed invalidate or clear boundary.
+- Concurrent same-key calls that are not separated by invalidate/clear do not trigger duplicate valid loads.
+- Different keys continue making progress independently.
+These tests are enough to evaluate the core reasoning: shared work, cancellation isolation, failure behavior, invalidation boundaries, stale-result prevention, and multi-dispatcher safety.
