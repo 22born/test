@@ -1,290 +1,90 @@
-Gesture Ownership Router
+Monotonic Snapshot Store
 
 Context
 
-In an Android/Kotlin app, multiple gesture recognizers may want to handle the same pointer stream. For example, a photo viewer may want pinch gestures, a bottom sheet may want vertical drags, and a drawing canvas may want stylus input.
+In a Kotlin/Android app, a local store holds records that can be updated by remote server snapshots, remote server deltas, local optimistic edits, and rollback events. These operations may happen concurrently and may arrive out of order.
 
-You need a small router that receives pointer events and dispatches them to the correct recognizer while preserving ownership, cancellation, and reentrant dispatch rules.
+The store must provide consistent immutable snapshots to readers while preventing stale remote updates and stale rollback events from overwriting newer state.
 
 Task
 
 Implement:
 
-class GestureRouter {
-    fun register(
-        recognizer: GestureRecognizer
-    ): Registration
+class SnapshotStore<K, V> {
+    fun applySnapshot(
+        version: Long,
+        values: Map<K, V>
+    )
 
-    fun dispatch(event: PointerEvent)
+    fun applyDelta(
+        version: Long,
+        changes: Map<K, V?>
+    )
 
-    fun cancel(pointerId: Int)
+    fun localEdit(
+        key: K,
+        value: V
+    ): Long
 
-    fun clear()
+    fun rollback(
+        editId: Long
+    )
 
-    interface Registration {
-        fun unregister()
-    }
+    fun read(): Map<K, V>
 }
 
-interface GestureRecognizer {
-    fun onPointerEvent(event: PointerEvent): GestureDecision
-    fun onCancel(pointerId: Int)
-}
-
-data class PointerEvent(
-    val pointerId: Int,
-    val type: PointerEventType,
-    val x: Float,
-    val y: Float,
-    val timestampMillis: Long
-)
-
-enum class PointerEventType {
-    Down,
-    Move,
-    Up,
-    Cancel
-}
-
-enum class GestureDecision {
-    Ignore,
-    Interested,
-    Claim,
-    Release
-}
+"changes" uses "null" to mean deletion.
 
 Requirements
 
-1. Each call to "register" creates one independent active registration.
-2. "unregister()" must remove only that registration.
-3. Calling "unregister()" more than once must be safe.
-4. A "Down" event starts a new pointer stream for that "pointerId".
-5. Events for a pointer without an active stream must be ignored unless the event is "Down".
-6. While no recognizer owns a pointer stream, events are offered to active recognizers in registration order.
-7. "Interested" does not claim ownership and does not prevent later recognizers from receiving the same event.
-8. "Ignore" does not claim ownership and does not prevent the recognizer from participating in future streams.
-9. If a recognizer returns "Claim", it becomes the owner of that pointer stream, and no later recognizer receives that same event.
-10. Once a recognizer owns a pointer stream, future events for that pointer go only to that owner.
-11. If the owner returns "Release", ownership ends after that callback; the same event is not re-dispatched to other recognizers.
-12. After ownership is released, later events for that active pointer stream may be offered again in registration order.
-13. "Up" and "Cancel" events are delivered to the current owner if one exists, then end the pointer stream.
-14. If there is no owner, "Up" and "Cancel" end the pointer stream after normal unowned routing.
-15. "cancel(pointerId)" must notify the current owner with "onCancel(pointerId)", if one exists, and end that pointer stream.
-16. If a recognizer unregisters while owning one or more pointer streams, it must receive "onCancel(pointerId)" exactly once for each owned active stream, and those streams lose ownership.
-17. If an owner unregisters itself while handling an event for a stream it owns, it must not receive duplicate cancellation for that same stream.
-18. "clear()" must unregister all recognizers, cancel all owned streams exactly once, and remove all active pointer streams.
-19. A recognizer registered during dispatch must not receive the event currently being dispatched.
-20. A recognizer unregistered before dispatch starts must not receive that event.
-21. If a recognizer is unregistered during dispatch before its turn, it must not receive that event.
-22. A recognizer may call "register", "unregister", "clear", "cancel", or "dispatch" from inside a callback without corrupting router state.
-23. If a recognizer calls "dispatch()" while handling another event, the nested dispatch must complete before the outer dispatch continues to the next recognizer.
-24. Events for different "pointerId"s must maintain independent ownership.
-25. The router must not strongly retain unregistered recognizers after any in-flight dispatch that captured them has finished.
+1. "read()" must return a consistent immutable snapshot.
+2. Remote updates have server versions. Remote updates may arrive out of order.
+3. A remote update with "version <= latest accepted remote version" must be ignored.
+4. "applySnapshot(version, values)" must replace the entire remote state if its version is newer than the latest accepted remote version.
+5. "applyDelta(version, changes)" must apply sparse changes to the latest accepted remote state if its version is newer than the latest accepted remote version.
+6. Local edits must be visible immediately after "localEdit" returns.
+7. "localEdit" must return a unique edit id.
+8. Local edits form an overlay on top of remote state.
+9. If a key has an active local edit, reads must show the local value for that key instead of the remote value.
+10. Remote snapshots, remote deltas, and remote deletions must not hide active local edits.
+11. A new "localEdit" for a key supersedes any previous local edit for that same key.
+12. "rollback(editId)" must undo only that edit if it is still the active local edit for its key.
+13. Rolling back an older edit must not remove or alter a newer local edit for the same key.
+14. Rolling back the active local edit for a key must reveal the current remote value for that key, or remove the key from reads if the key is absent remotely.
+15. Once an operation has completed, later reads must not observe a state older than that completed operation allows.
+16. All methods may be called concurrently from different threads.
+17. Returned snapshots must not expose mutable internal state.
 
 Output Format
 
 Return:
 
 1. Full Kotlin implementation.
-2. Brief explanation of ownership, release, cancellation, unregister, clear, and nested dispatch behavior.
+2. Brief explanation of remote version handling, local edit precedence, rollback behavior, and snapshot consistency.
 3. Important tests or pseudocode tests.
 
 
 
-Important test cases
-1. Claim stops current dispatch
-Register recognizers A, B, and C.
-A returns Interested, B returns Claim, and C records calls.
-Dispatch Down(pointerId = 1).
-Assert:
-- A receives the Down event.
-- B receives the Down event.
-- C does not receive the Down event.
-- B becomes owner of pointer 1.
-2. Owner receives later events exclusively
-B owns pointer 1.
-Dispatch:
-Move(pointerId = 1)
-Move(pointerId = 1)
-Up(pointerId = 1)
-Assert:
-- Only B receives the Move events.
-- B receives the Up event.
-- A and C do not receive those owned events.
-- Pointer stream 1 ends after Up.
-3. Events without active stream are ignored except Down
-Dispatch Move, Up, and Cancel for pointer 99 without a prior Down.
-Assert:
-- No recognizer receives those events.
-- No stream or owner is created.
-Then dispatch Down(pointerId = 99).
-Assert:
-- The Down event starts routing normally.
-4. Release affects only future events
-B owns pointer 1.
-During Move(pointerId = 1), B returns Release.
-Assert:
-- The current Move is delivered only to B.
-- The current Move is not re-offered to A or C.
-- Ownership is cleared after B’s callback.
-Then dispatch another Move(pointerId = 1).
-Assert:
-- The new Move is offered in registration order.
-- Another recognizer may claim it.
-5. Up clears owner and ends stream
-B owns pointer 1.
-Dispatch Up(pointerId = 1), then dispatch Move(pointerId = 1).
-Assert:
-- B receives Up.
-- Ownership is cleared.
-- The later Move is ignored because the stream ended.
-6. Cancel event clears owner and ends stream
-B owns pointer 1.
-Dispatch PointerEvent(type = Cancel, pointerId = 1).
-Assert:
-- B receives the Cancel event through onPointerEvent.
-- Ownership is cleared.
-- Stream 1 ends.
-- Later non-Down events for pointer 1 are ignored.
-7. External cancel notifies owner once
-B owns pointer 1.
-Call:
-router.cancel(1)
-Assert:
-- B.onCancel(1) is called exactly once.
-- Stream 1 ends.
-- Later events for pointer 1 do not go to B unless a new Down starts a new stream.
-8. Owner unregisters while owning
-B owns pointer 1.
-Call B’s registration:
-registrationB.unregister()
-Assert:
-- B.onCancel(1) is called exactly once.
-- B is removed from the registry.
-- Stream 1 remains active but unowned, or is ended only if your implementation documents that unregister ends it.
-- Later events do not go to B.
-For this prompt, the expected behavior is:
-The stream remains active but loses ownership.
-9. Owner unregisters itself during owned callback
-B owns pointer 1.
-During Move(pointerId = 1), B calls its own unregister().
-Assert:
-- Router state remains valid.
-- B is removed.
-- B does not receive duplicate onCancel for pointer 1.
-- Pointer 1 loses ownership.
-- Later events for pointer 1 do not go to B.
-10. Unregister removes recognizer from all owned pointers
-A owns pointer 1 and pointer 2.
-A unregisters.
-Assert:
-- A.onCancel(1) is called exactly once.
-- A.onCancel(2) is called exactly once.
-- Both streams lose ownership.
-- A receives no later events.
-11. Register during dispatch does not receive current event
-A receives Down(pointerId = 1) and registers D during its callback.
-Assert:
-- D does not receive the current Down event.
-- D may receive a later unowned event or a future stream.
-12. Unregister before turn skips current event
-A, B, and C are registered.
-During A’s callback, A unregisters C before C’s turn.
-Assert:
-- C does not receive the current event.
-- C does not receive later events.
-13. Interested does not block later recognizers
-A returns Interested, B returns Interested, C returns Claim.
-Dispatch Down(pointerId = 1).
-Assert:
-- A, B, and C receive the Down event.
-- C becomes owner.
-- Later pointer 1 events go only to C.
-14. Ignore does not permanently disable recognizer
-A returns Ignore for pointer 1.
-Later, a new stream starts with Down(pointerId = 2), and A returns Claim.
-Assert:
-- A can still receive and claim future streams.
-- Ignore affects only the current routing decision.
-15. Nested dispatch completes before outer dispatch continues
-A receives an outer event and calls dispatch(nestedEvent) inside its callback.
-Assert call order:
-A: outer event
-nested dispatch fully completes
-B: outer event
-C: outer event
-This verifies stack-like reentrant dispatch.
-16. Nested dispatch observes updated registry
-A receives an outer event, registers D, then calls nested dispatch.
-Assert:
-- D does not receive the already-running outer event.
-- D can receive the nested event if eligible.
-17. Nested dispatch with independent pointer ownership
-B owns pointer 1.
-During B’s callback for pointer 1, B dispatches a Down or Move for pointer 2.
-Assert:
-- Pointer 1 ownership remains with B.
-- Pointer 2 is routed independently.
-- Ownership state for pointer 1 and pointer 2 does not corrupt each other.
-18. Multiple pointers owned by different recognizers
-A claims pointer 1. B claims pointer 2.
-Dispatch mixed events:
-Move pointer 1
-Move pointer 2
-Up pointer 1
-Move pointer 2
-Assert:
-- Pointer 1 events go only to A until Up.
-- Pointer 2 events go only to B.
-- Ending pointer 1 does not affect pointer 2.
-19. clear cancels all owned streams and removes recognizers
-A owns pointer 1, B owns pointer 2, and C is registered but owns nothing.
-Call:
-router.clear()
-Assert:
-- A.onCancel(1) is called exactly once.
-- B.onCancel(2) is called exactly once.
-- C is removed.
-- All pointer streams are removed.
-- Later events are ignored until new recognizers are registered.
-20. clear during callback
-A receives an event and calls clear() inside its callback.
-Assert:
-- Router does not crash.
-- All owned streams are cancelled exactly once.
-- No recognizer receives later events after clear.
-- Recognizers removed by clear are not called later in the same dispatch if their turn had not happened yet.
-21. Concurrent cancel and unregister race
-A owns pointer 1.
-Concurrently call:
-router.cancel(1)
-registrationA.unregister()
-Assert:
-- A.onCancel(1) is called at most once.
-- Registration A is removed.
-- Pointer 1 has no stale owner.
-- Later events do not go to A.
-22. Concurrent register, unregister, dispatch, cancel, and clear stress test
-Run many operations concurrently:
-register
-unregister
-dispatch Down / Move / Up / Cancel
-cancel(pointerId)
-clear
-nested dispatch from callbacks
-Assert:
-- No crashes.
-- No duplicate delivery of the same event to the same active registration.
-- No stale owner after Up, Cancel, unregister, cancel(pointerId), or clear.
-- No recognizer receives events after unregister or clear has completed, except if it was already inside its own callback.
-23. Leak after unregister
-Register a recognizer, unregister it, drop all external strong references, and force GC in a leak-style test.
-Assert:
-- The router does not strongly retain the recognizer after any in-flight dispatch that captured it has finished.
-24. Leak after unregister while owning
-A recognizer owns a pointer stream, then unregisters.
-Drop external references and force GC in a leak-style test.
-Assert:
-- The recognizer can be collected.
-- No registration entry or ownership entry retains it.
-These are the important tests. The hardest and highest-value ones are 1, 4, 8, 9, 15, 16, 17, 19, 20, 21, and 24.
+
+
+10 high-value tests:
+Newer delta beats older snapshot
+Apply a higher-version delta, then a lower-version full snapshot. Verify the older snapshot is ignored and cannot restore stale data.
+Snapshot replacement preserves active local overlay
+Apply a snapshot, make a local edit, then apply a newer snapshot that omits or changes that key. Verify the local edit remains visible while the remote layer is replaced underneath.
+Remote delete under local edit, then rollback
+Locally edit a key, remotely delete that key, then roll back the active edit. Verify the local value remains visible before rollback, and the key disappears after rollback.
+Remote state evolves under local edit
+Keep a local edit active while multiple newer remote deltas/snapshots change the same key. Verify the local value stays visible, and after rollback the latest accepted remote value appears.
+Rollback of older edit does not remove newer edit
+Make two local edits to the same key. Roll back the older edit. Verify the newer edit remains active and visible.
+Rollback racing with newer local edit
+Race rollback(oldEditId) against a new localEdit for the same key. Verify rollback cannot remove or corrupt the newer edit.
+Concurrent remote updates respect monotonic versioning
+Apply snapshots and deltas concurrently with different versions. Verify the accepted remote version never moves backward and the final state is consistent with one valid serialized order.
+Read never exposes partial snapshot during full replacement
+While one thread repeatedly applies large snapshots, other threads read. Verify every read is a complete consistent state, never a mixture of two snapshots.
+Read-after-completed-operation boundary
+After each completed operation, immediately read. Verify the read reflects all completed operations according to precedence: active local edit over latest accepted remote state.
+Mixed-operation stress test
+Randomly interleave snapshots, deltas, local edits, rollbacks, and reads across threads. Verify no torn reads, no stale remote overwrite, no rollback of superseded edits, and no mutable internal state exposure.
