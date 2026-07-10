@@ -1,115 +1,108 @@
-Causal Mutation Reconciler
+Beat-Aligned Playback Scheduler
 
 Context
 
-In an offline-capable Android/Kotlin app, users can edit local state while disconnected. Each local edit is applied optimistically and later acknowledged or rejected by the server.
+In a Kotlin/Android music app, users can trigger loops, samples, and transitions while music is playing. Actions should not happen immediately. They should be scheduled to occur on musical boundaries such as the next beat or next bar.
 
-Local edits may depend on earlier edits. Server acknowledgements, rejections, and remote snapshots may arrive out of order.
-
-You need a reconciler that keeps the visible state correct while handling optimistic mutations, dependency invalidation, rollback, and remote snapshot reconciliation.
+The scheduler receives timing updates from the audio engine and user commands from the UI. These may arrive concurrently and out of order.
 
 Task
 
 Implement:
 
-class MutationReconciler<K, V> {
-    fun applyRemoteSnapshot(
-        version: Long,
-        values: Map<K, V>
+class BeatScheduler {
+    fun updateClock(
+        positionMillis: Long,
+        bpm: Double,
+        beatsPerBar: Int
     )
 
-    fun localPut(
-        key: K,
-        value: V,
-        dependsOn: Set<Long> = emptySet()
-    ): Long
-
-    fun localDelete(
-        key: K,
-        dependsOn: Set<Long> = emptySet()
-    ): Long
-
-    fun acknowledge(
-        mutationId: Long,
-        serverVersion: Long
+    fun schedule(
+        id: String,
+        quantization: Quantization,
+        action: () -> Unit
     )
 
-    fun reject(
-        mutationId: Long
-    )
+    fun cancel(id: String)
 
-    fun read(): Map<K, V>
+    fun clear()
+
+    fun tick(nowMillis: Long)
 }
 
-"localPut" and "localDelete" return unique local mutation IDs.
+enum class Quantization {
+    NextBeat,
+    NextBar
+}
 
 Requirements
 
-1. Local mutations must be visible immediately and applied on top of the latest accepted remote snapshot.
-
-2. Remote snapshots have versions and may arrive out of order. A snapshot older than the latest accepted remote version must be ignored.
-
-3. Acknowledgements and rejections may arrive out of order and must be reconciled against the current mutation graph, not just the current visible value.
-
-4. Rejecting a mutation must invalidate that mutation and every local mutation that directly or indirectly depends on it.
-
-5. A mutation must not be treated as durable if any declared dependency has been rejected, even if that mutation was acknowledged earlier.
-
-6. If multiple local mutations affect the same key, the latest valid local mutation wins.
-
-7. If the latest local mutation for a key is rejected, the visible state must fall back to the next-latest valid local mutation for that key, or to the remote snapshot if none remains.
-
-8. Remote snapshots must update the base state underneath valid local mutations without hiding them.
-
-9. A rejected mutation must not be resurrected by later acknowledgements or stale snapshots.
-
-10. Reads after completed operations must return a consistent visible state that reflects local-over-remote precedence, dependency invalidation, and accepted remote version ordering.
-
-11. The reconciler must behave correctly when local mutations, remote snapshots, acknowledgements, rejections, and reads are called concurrently.
-
-The returned read state must be a safe snapshot and must not expose mutable internal state.
+1. "schedule" must register an action to run at the next requested musical boundary.
+2. "NextBeat" actions run at the next beat boundary after the latest known playback position.
+3. "NextBar" actions run at the next bar boundary after the latest known playback position.
+4. Actions with the same "id" replace older pending actions with that id.
+5. "cancel(id)" removes only the pending action with that id.
+6. "clear()" removes all pending actions.
+7. An action cancelled before its boundary must not run.
+8. An action replaced before its boundary must not run.
+9. If "bpm" changes before an action fires, the action must remain aligned to the correct musical boundary under the latest clock.
+10. If clock updates arrive out of order, stale timing updates must not move the scheduler backward.
+11. "tick(nowMillis)" must run all due actions exactly once.
+12. Actions scheduled for the same boundary must run in scheduling order.
+13. Actions may schedule, cancel, or clear other actions during execution without corrupting scheduler state.
+14. The scheduler must behave correctly when "updateClock", "schedule", "cancel", "clear", and "tick" are called concurrently.
+15. The implementation must avoid unbounded growth of cancelled or fired actions.
 
 Output Format
 
 Return:
 
 1. Full Kotlin implementation.
-2. Brief explanation of optimistic state, dependency handling, acknowledgement/rejection behavior, and remote snapshot reconciliation.
+2. Brief explanation of musical timing, replacement, cancellation, BPM changes, and stale clock handling.
 3. Important tests or pseudocode tests.
 
 
 
 
 
-
-Crucial test cases
-Out-of-order acknowledgement followed by dependency rejection
-Create mutation m1, then mutation m2 depending on m1, then mutation m3 depending on m2. Acknowledge m2 before m1, then reject m1. Verify m1, m2, and m3 are all invalidated, even though m2 was acknowledged earlier.
-Acknowledged mutation is invalidated if dependency later rejects
-Create m1, create m2 depending on m1, acknowledge m2, then reject m1. Verify m2 is not treated as durable and its visible effect disappears.
-Reject latest mutation falls back to previous valid mutation on same key
-Start with remote A = remote. Apply m1: A = local-1, then m2: A = local-2. Reject m2. Verify visible A becomes local-1, not remote.
-Reject chain only removes dependent branch, not unrelated mutations
-Create m1, then m2 depending on m1, and also create unrelated m3. Reject m1. Verify m1 and m2 are invalidated, but m3 remains visible.
-Remote snapshot updates underneath pending local mutation
-Start with remote A = remote-1. Apply local A = local. Then apply newer remote snapshot A = remote-2. Verify visible A remains local. After rejecting the local mutation, verify visible A becomes remote-2.
-Remote snapshot must not resurrect rejected mutation
-Create a local mutation, reject it, then apply an older remote snapshot or acknowledge the rejected mutation later. Verify the rejected mutation does not become visible again.
-Out-of-order remote snapshots preserve latest accepted base
-Apply remote snapshot version 10, then version 12, then version 11. Verify version 11 is ignored and reads reflect version 12 plus any valid local overlay.
-Delete mutation fallback behavior
-Start with remote A = remote. Apply m1: put A = local, then m2: delete A. Reject m2. Verify A falls back to local. Then reject m1 and verify A falls back to remote.
-Rejected dependency blocks later acknowledgement
-Create m1, create m2 depending on m1, reject m1, then acknowledge m2. Verify m2 remains invalid and never becomes visible or durable.
-Remote snapshot with deleted key under local edit
-Start with remote containing A. Apply local A = local. Then apply a newer remote snapshot that omits A. Verify visible A remains local. After rejecting the local mutation, verify A disappears.
-Concurrent local edits to same key produce deterministic visible winner
-Perform many concurrent local edits to the same key. Verify mutation IDs are unique, the visible value corresponds to one valid latest mutation, and rejecting that mutation falls back to the next-latest valid mutation.
-Rollback/reject racing with newer local edit
-Create m1: A = one. Race reject(m1) with localPut(A, two). Verify no final state incorrectly removes the newer mutation if it was created after or independently of the rejected mutation.
-Read never exposes partially reconciled dependency state
-While one thread rejects a root mutation with many transitive dependents, other threads call read(). Verify reads never show a state where a dependent mutation remains visible while its rejected dependency is already gone.
-Read never exposes mixed remote snapshot state
-Apply large remote snapshots concurrently with reads. Verify each read returns a complete consistent base snapshot plus valid local overlay, never a mixture of two remote versions.
-Mixed out-of-order stress test
-Randomly interleave local puts, local deletes, dependency chains, acknowledgements, rejections, remote snapshots, and reads across threads. Verify invariants: rejected mutations and their dependents stay invalid, latest valid local mutation wins per key, stale snapshots are ignored, and reads are consistent.
+Playback Scheduler.
+NextBeat quantizes strictly after current position
+Set playback exactly on a beat boundary, then schedule NextBeat. Verify it fires on the next beat, not immediately on the current boundary.
+NextBar quantizes strictly after current position
+Set playback exactly on a bar boundary, then schedule NextBar. Verify it fires on the next bar, not immediately on the current bar boundary.
+Near-boundary scheduling does not fire early
+Update clock to just before a beat/bar boundary, schedule an action, call tick before the boundary, then after the boundary. Verify it fires only after the boundary is reached.
+BPM change before firing preserves musical alignment
+Schedule a NextBar action, then change BPM before the action fires. Verify the action fires at the correct next bar according to the latest musical clock, not the old precomputed wall-clock timestamp.
+beatsPerBar change before firing affects bar alignment
+Schedule a NextBar action with beatsPerBar = 4, then update clock with beatsPerBar = 3 before firing. Verify the action aligns to the correct next bar under the new meter.
+Out-of-order clock update is ignored
+Send a newer clock update, then an older/stale timing update. Verify the stale update cannot move playback backward or cause an action to fire late, early, or twice.
+Same-id replacement cancels older pending action
+Schedule action id = "drop", then schedule another action with the same id before the boundary. Verify only the newer action runs.
+Replacement with different quantization recomputes boundary
+Schedule id = "loop" with NextBar, then replace it with NextBeat. Verify the old bar-aligned action does not run and the replacement fires on the correct beat boundary.
+Cancel before boundary prevents execution
+Schedule an action, cancel it before its boundary, then advance past the boundary. Verify it never runs.
+Cancel racing with tick at boundary
+Arrange for cancel(id) and tick(nowAtBoundary) to race. Verify the result is consistent with one valid ordering: either the action runs exactly once, or it is cancelled and never runs. It must not run twice or remain pending.
+clear cancels all pending actions
+Schedule multiple actions for different boundaries, call clear(), advance time past all boundaries, and verify none run.
+clear racing with tick
+Race clear() with a tick that makes several actions due. Verify each action either runs once or is cleared, with no duplicate execution and no pending leftovers.
+Actions with same boundary run in scheduling order
+Schedule multiple actions that quantize to the same beat or bar. Verify execution order matches scheduling order.
+Action scheduled during action does not run in same tick unless its boundary is already later and another tick occurs
+Have action A schedule action B during execution. Verify B does not get accidentally included in the current due-action snapshot and run reentrantly in the same tick.
+Action cancels another due action during execution
+Schedule A and B for the same boundary. A runs first and cancels B. Verify B does not run if cancellation occurs before B’s turn.
+Action replaces another due action during execution
+Schedule A and B for the same boundary. A replaces B with a new action. Verify old B does not run, and the replacement is scheduled according to the current clock and quantization rules.
+Exactly-once execution across repeated ticks
+Schedule an action, advance past its boundary, then call tick many times. Verify the action runs exactly once and is removed after firing.
+Multiple due boundaries in one tick
+Schedule actions for different boundaries, then jump the clock far enough that several boundaries are crossed before the next tick. Verify all due actions run once, in boundary-time order, with scheduling order used for ties.
+Clock drift correction does not resurrect fired actions
+Fire an action, then send a clock update that slightly corrects playback position backward but is not stale under your accepted clock ordering. Verify the fired action does not become pending or run again.
+Concurrent schedule, cancel, updateClock, and tick stress test
+Randomly interleave clock updates, BPM changes, schedule/replace/cancel/clear calls, and ticks from multiple threads. Verify no duplicate execution, no stale cancelled action runs, same-boundary ordering is preserved, and pending action storage does not grow without bound
