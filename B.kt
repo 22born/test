@@ -1,30 +1,15 @@
-Task name
 Symmetric Skin Weight Solver
-Category
-3D character rigging / geometry processing / constraint solving / performance
-Core idea
-A character mesh has vertices influenced by bones. Each vertex has skin weights like:
-LeftUpperArm: 0.55
-LeftForearm: 0.35
-Spine: 0.10
-The weights must satisfy constraints:
-sum of weights per vertex = 1.0
-no negative weights
-max 4 influences per vertex
-locked weights must not change
-left/right bones should mirror across the character centerline
-deformation should remain visually close to the original
-The hard part is that fixing one rule can break another.
-For example:
-A vertex has 6 influences.
-You must reduce it to 4.
-But 2 influences are locked.
-The mirrored vertex has a different bone set.
-The total must still normalize to 1.0.
-The result should preserve deformation as much as possible.
-A naïve solution will normalize weights and call it done, but that can destroy the deformation or violate locked weights.
-Problem idea
-Implement a solver that repairs and mirrors skin weights on a mesh.
+
+Context
+
+In a 3D character rigging pipeline, each mesh vertex is influenced by skeleton bones through skin weights. Bad weights can cause broken deformation, asymmetry, or engine export failures.
+
+You need to implement a solver that repairs skin weights while respecting locked influences and left/right symmetry.
+
+Task
+
+Implement:
+
 class SkinWeightSolver {
     fun solve(
         mesh: Mesh,
@@ -32,74 +17,118 @@ class SkinWeightSolver {
         options: SolveOptions
     ): SkinWeightResult
 }
-Where each vertex has:
-data class SkinWeights(
-    val vertexId: Int,
+
+Use these models, or equivalent ones:
+
+typealias BoneId = String
+
+data class Mesh(
+    val vertices: List<Vertex>,
+    val mirrorVertex: Map<Int, Int>
+)
+
+data class Vertex(
+    val id: Int,
     val weights: Map<BoneId, Float>,
     val lockedBones: Set<BoneId> = emptySet()
 )
-The solver must:
-1. Normalize each vertex’s weights to sum to 1.
-2. Preserve locked bone weights exactly.
-3. Remove tiny/invalid influences.
-4. Limit each vertex to max N influences.
-5. Mirror weights across left/right bone pairs.
-6. Handle centerline vertices specially.
-7. Avoid sudden weight discontinuities between neighboring vertices.
-8. Minimize deformation error compared to the original weights.
-Why this is hard
-The key conflict is:
-locked weights + max influence count + normalization + mirroring
-Example:
-maxInfluences = 4
 
-Vertex v:
-Locked:
-  Spine = 0.40
-  LeftArm = 0.30
+data class Skeleton(
+    val bones: Set<BoneId>,
+    val mirrorBone: Map<BoneId, BoneId>,
+    val rootBone: BoneId
+)
 
-Unlocked:
-  LeftForearm = 0.12
-  LeftHand = 0.08
-  Neck = 0.05
-  Clavicle = 0.05
-Only two more influences can remain because two are locked.
-A simple “keep top 4 weights” works here.
-But now suppose:
-Locked:
-  Spine = 0.40
-  LeftArm = 0.30
-  LeftForearm = 0.20
-  LeftHand = 0.15
-  Neck = 0.10
-The locked weights already exceed:
-maxInfluences = 4
-sum = 1.15
-The solver must detect that the constraints are impossible and return a structured error, not silently produce bad weights.
-The genuinely difficult version
-Add a deformation preservation requirement.
-Given the original bind-pose vertex position and several test poses, the solver should minimize the positional error between:
-original skinning result
-and:
-repaired skinning result
-So it is no longer just “normalize numbers.” It becomes constrained optimization:
-Find valid weights that:
-- sum to 1
-- respect locked weights
-- use at most 4 influences
-- mirror correctly
-- minimize deformation error over sample poses
-This forces real reasoning.
-Good final task shape
-Symmetric Skin Weight Solver
-The solver receives a mesh, skeleton, bone mirror map, vertex mirror map, locked influences, max influence count, and sample poses.
-It must output repaired weights and diagnostics.
-Hard cases include:
-- mirrored vertices with unmatched bone sets
-- centerline vertices affected by left/right bones
-- locked weights that make constraints impossible
-- pruning influences without causing visible deformation jumps
-- preserving deformation across multiple poses
-- smoothing weights without changing locked influences
-- floating-point tolerance issues
-This is a very good complex task because it mixes geometry, rigging rules, constraint solving, symmetry, and numerical stability.
+data class SolveOptions(
+    val maxInfluences: Int = 4,
+    val minWeight: Float = 0.001f,
+    val tolerance: Float = 0.0001f
+)
+
+data class SkinWeightResult(
+    val weights: Map<Int, Map<BoneId, Float>>,
+    val diagnostics: List<String>
+)
+
+Requirements
+
+1. For every solvable vertex, output weights must be non-negative, use only known bones, sum to "1.0" within tolerance, and contain at most "maxInfluences" bones.
+
+2. Unknown unlocked bones must be removed.
+
+3. Weights below "minWeight" may be pruned unless the bone is locked.
+
+4. Known locked bone weights must be preserved exactly.
+
+5. If locked constraints make a vertex impossible, report a diagnostic. Impossible cases include locked unknown bones, negative locked weights, locked weights summing above "1.0", or more locked bones than "maxInfluences".
+
+6. If a solvable vertex has no usable unlocked or locked weights after cleanup, assign weight "1.0" to "skeleton.rootBone".
+
+7. When pruning unlocked influences, preserve the original weight distribution as closely as possible using deterministic tie-breaking.
+
+8. If two vertices are mirrored by "mesh.mirrorVertex", their solved weights should mirror through "skeleton.mirrorBone" whenever this does not violate locked weights.
+
+9. Mirroring must not overwrite locked weights.
+
+10. If mirror symmetry conflicts with locked weights, preserve the locked weights and report a symmetry diagnostic.
+
+11. A vertex mapped to itself is a centerline vertex. For centerline vertices, mirrored left/right bone pairs should have equal weights unless locked weights make that impossible.
+
+12. Missing mirror bones, missing mirrored vertices, invalid input weights, impossible vertices, and symmetry conflicts must be reported in diagnostics.
+
+13. The solver must produce deterministic results regardless of map iteration order.
+
+Output Format
+
+Return:
+
+1. Full Kotlin implementation.
+2. Brief explanation of the solving strategy.
+3. Important tests or pseudocode tests.
+
+
+
+
+
+
+Here are the important hard test cases for Symmetric Skin Weight Solver.
+Locked weights make normalization impossible
+A vertex has locked known bones whose weights sum above 1.0. Verify the solver reports an impossible-constraint diagnostic and does not silently normalize locked weights.
+Too many locked influences
+A vertex has more locked known bones than maxInfluences. Verify the solver reports an impossible-constraint diagnostic.
+Locked unknown bone
+A vertex has a locked bone that is not in the skeleton. Verify the solver reports an impossible-constraint diagnostic instead of dropping it.
+Unlocked unknown bones are removed and remaining weights renormalize
+A vertex has a mix of known and unknown unlocked bones. Verify unknown bones are removed and the known remaining weights are normalized correctly.
+Pruning respects locked low weights
+A locked weight is below minWeight, while unlocked low weights are also present. Verify the locked low weight is preserved, but unlocked low weights may be pruned.
+Max-influence pruning preserves locked weights
+A vertex has more influences than maxInfluences, including locked bones. Verify locked bones remain exactly unchanged and pruning only removes unlocked influences.
+Pruning tie-break is deterministic
+A vertex has several unlocked influences with equal weights and only some can remain. Run the solver multiple times with different map iteration orders. Verify the same bones are kept every time.
+Empty usable weights fall back to root bone
+A solvable vertex has only invalid, unknown, negative, or pruned unlocked weights. Verify the solver assigns rootBone = 1.0.
+Mirrored vertices produce mirrored weights
+Vertex L mirrors vertex R. L uses left-side bones and R uses right-side bones. Verify solved weights match through mirrorBone.
+Mirroring handles different original influence sets
+Mirrored vertices start with different bone sets and different small/invalid weights. Verify the final pair is symmetric when no locks prevent it.
+Mirroring does not overwrite locked weights
+One vertex in a mirror pair has locked weights that conflict with the mirrored partner. Verify locked weights are preserved exactly and a symmetry diagnostic is reported.
+Both sides have conflicting locked weights
+Mirrored vertices each lock different incompatible values on corresponding bones. Verify both locked sets are preserved and a symmetry conflict diagnostic is reported.
+Centerline vertex equalizes left/right pairs
+A vertex maps to itself and has asymmetric left/right bone weights. Verify the solved centerline weights equalize mirrored bone pairs when no locks prevent it.
+Centerline locked asymmetry is preserved with diagnostic
+A centerline vertex has locked asymmetric left/right weights. Verify the locked values are preserved and a symmetry diagnostic is reported.
+Missing mirror bone diagnostic
+A vertex uses a bone whose mirror counterpart is missing from skeleton.mirrorBone. Verify the solver reports the missing mirror bone and does not produce nondeterministic mirrored output.
+Mirror map references missing vertex
+mesh.mirrorVertex points to a vertex id that does not exist. Verify the solver reports a diagnostic and still solves the existing vertex locally.
+Mirror cycle consistency
+The mirror map has A -> B and B -> A. Verify solving the pair is deterministic and does not apply mirroring twice in a way that changes weights again.
+Asymmetric pair with locked plus pruning pressure
+A mirrored pair has locked weights on one side, more than maxInfluences on both sides, and several low weights. Verify the final solution respects locks, max influences, normalization, and reports symmetry conflicts only where unavoidable.
+Negative unlocked weights are removed or diagnosed without corrupting normalization
+A vertex has negative unlocked weights mixed with valid known weights. Verify negative values do not survive into the output and the final solvable vertex still normalizes correctly.
+Full deterministic stress case
+Use many vertices with mirrored pairs, centerline vertices, unknown bones, equal-weight ties, locks, low weights, and max-influence pressure. Shuffle all input maps/lists and run repeatedly. Verify identical output weights and diagnostics each time.
