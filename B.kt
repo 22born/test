@@ -1,1 +1,1 @@
-
+If locked constraints make a vertex impossible, still include that vertex in the output weights map. Preserve all locked bone entries exactly as provided, including unknown or invalid locked bones, and do not normalize, prune, mirror, repair, or enforce maxInfluences on that vertex. Also emit a diagnostic. Normal validity rules apply only to solvable vertices.
