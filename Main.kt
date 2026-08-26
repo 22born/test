@@ -1,4 +1,6 @@
-Android Animation Transition Reconciler
+Implement `AnimationReconciler` so it reconciles submitted animation requests, cancellations, removals, ticks, and restore operations into deterministic animation frames without stale completions or jumps.
+
+ndroid Animation Transition Reconciler
 Core idea
 A UI element may receive many animation requests before previous animations finish: expand, collapse, drag, snap, interrupt, reverse, remove, reinsert, or restore after configuration change.
 The reconciler must produce correct animation states over time without jumps, stale completions, duplicated callbacks, or invalid final states.
