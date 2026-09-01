@@ -1,175 +1,132 @@
-# Android Stable Layout Transition Orchestrator
+# Compose Stable Layout Transition Coordinator
 
 ## Context
 
-A custom Android ViewGroup displays dynamic item views. Between layout passes, items may move, resize, reorder, appear, disappear, detach, or be rebound to different logical items because of view recycling.
+A Jetpack Compose screen displays a dynamic list of keyed UI items. Between recompositions, items may move, resize, reorder, appear, disappear, or reappear while an earlier transition is still running.
 
-The orchestrator must animate these layout changes without visual jumps, stale animations, leaked ghost views, or animations mutating the wrong recycled View.
+The coordinator must animate these layout changes by logical key, not by composition order, and must avoid visual jumps, duplicate disappearing items, stale exit animations, or wrong animations after recomposition.
 
 ## Task
 
-Implement StableLayoutTransitionOrchestrator.
+Implement `StableTransitionColumn`.
 
 ## Starter Code
 
 ```kotlin
-import android.graphics.Rect
-import android.view.View
-import android.view.ViewGroup
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 
-class StableLayoutTransitionOrchestrator(
-    private val container: ViewGroup,
-    private val keyProvider: (View) -> String?,
-    private val ghostHost: GhostHost
+@Composable
+fun StableTransitionColumn(
+    items: List<TransitionItem>,
+    modifier: Modifier = Modifier,
+    itemContent: @Composable (TransitionItem) -> Unit
 ) {
-    fun captureBeforeLayout() {
-        TODO("Implement")
-    }
-
-    fun animateAfterLayout() {
-        TODO("Implement")
-    }
-
-    fun cancel(key: String) {
-        TODO("Implement")
-    }
-
-    fun endAll() {
-        TODO("Implement")
-    }
+    TODO("Implement")
 }
 
-interface GhostHost {
-    fun addGhost(key: String, bounds: Rect, zOrder: Int): View
-    fun removeGhost(key: String)
-}
+data class TransitionItem(
+    val key: String,
+    val contentVersion: Long = 0
+)
+
 
 
 Requirements
-Use Kotlin and Android framework APIs only. Do not use Jetpack Compose, coroutines, or third-party animation libraries.
-Participating items are direct children of container whose keyProvider(view) returns a non-null key, whose visibility is View.VISIBLE, and whose width and height are non-zero.
-Transitions are keyed by logical item key, not by View instance. If a View is rebound to another key, old animations must not mutate it. If the same key appears on a different View, the transition follows the key.
-captureBeforeLayout() captures the current visual bounds of participating items in container coordinates, including active transition transforms.
-animateAfterLayout() compares the captured state with the current post-layout state and starts transitions for moved, resized, inserted, and removed keys. If animateAfterLayout() is called without a prior capture, it must not create animations.
+Use Jetpack Compose APIs only. Do not use Android View APIs, RecyclerView, coroutines, or third-party animation/layout libraries.
+Items are laid out vertically in the order of items. Removed items may remain visually during exit, but must not affect the measured layout of current items.
 All animations use linear interpolation over 300ms.
-For an existing key whose bounds changed, the real post-layout View must visually start at the captured bounds and animate to its final laid-out bounds without jumping. At the end, translationX, translationY, scaleX, scaleY, pivotX, and pivotY must be reset to a clean final state.
-Inserted keys animate their real View from alpha = 0 to alpha = 1 at their final laid-out bounds.
-Removed keys animate out using a ghost view created from the captured visual bounds. The real removed View must not be mutated after removal. The ghost fades from alpha = 1 to alpha = 0.
-Each ghost must be removed exactly once after completion, cancel(key), or endAll().
-If a new layout transition starts while an older transition is still running, the new transition must start from the item’s current visual bounds at interruption time, not from the old captured bounds or final layout bounds.
-A running animation may mutate a real View only while that View is still a direct child of container and still maps to the same logical key.
-cancel(key) affects only that key. Existing or inserted real views for that key must immediately reach a clean final state. Removed-key ghosts for that key must be removed.
-endAll() must synchronously finish all active transitions, reset all remaining real views to clean final state, and remove all ghosts.
-Repeated capture/animate cycles with no visual change must not create animations or ghost views.
-Ghosts for removed keys must be created in ascending previous child index, then lexicographic key. The zOrder passed to addGhost must be the removed item’s previous child index.
-The implementation must be testable with Robolectric and must not require real device rendering.
-
+Transitions are keyed by TransitionItem.key, not by item index or composition position.
+Reordering existing keys must animate each item from its previous visual bounds to its new bounds without jumping.
+Resizing an existing key must animate from its previous visual bounds to its new measured bounds without jumping.
+Inserting a new key must animate it from alpha = 0 to alpha = 1 at its final measured position.
+Removing a key must keep an exit copy at its last visual bounds and animate its alpha from 1 to 0.
+A removed key’s exit copy must be disposed exactly once after its exit animation completes.
+If a key reappears while its exit animation is still running, there must be only one visual instance for that key, and the new transition must continue from the current visual bounds.
+If a new layout change happens while an item is already animating, the new animation must start from the item’s current visual bounds at interruption time.
+Changing contentVersion without changing measured bounds must not restart movement or resize animation.
+Changing measured bounds without changing contentVersion must still animate resize.
+Output must be deterministic for the same logical input sequence.
+The implementation must be testable with Compose UI tests and Roborazzi without requiring a real device.
 
 
 
 
 Test Cases
-[Robolectric] Move starts from old visual bounds
-Capture item A at x = 0. Relayout A at x = 100. Start the transition. Verify the first frame visually places A at the old bounds using translation, and the final frame resets transforms with A laid out at x = 100.
-[Robolectric] Resize without visual jump
-Capture A as 100x50. Relayout A as 200x80. Start the transition. Verify the start frame visually matches the old size through scale, and the end frame has clean final properties.
-[Robolectric] Reorder with recycled View instances
-Before layout, V1 represents A and V2 represents B. After layout, V1 represents B and V2 represents A. Verify animations follow logical keys A and B, not stale View instances.
-[Robolectric] Removed item uses ghost
-Capture A, remove its real View, then animate. Verify addGhost("A", oldBounds, previousIndex) is called, the real removed View is not mutated, and removeGhost("A") is called exactly once.
-[Robolectric] Inserted item waits for final bounds
-Add new item C after layout. Verify C animates from alpha = 0 to alpha = 1 at its final post-layout bounds, not from zero bounds or stale recycled bounds.
-[Robolectric] Interrupted move starts from current visual position
-Start A moving from x = 0 to x = 100. Advance to 40%. Capture again, relayout A to x = 200, and animate. Verify the new transition starts from A’s current visual position, not from 0 or 100.
-[Robolectric] Interrupted removal creates ghost from current visual bounds
-A is moving when it gets removed. Verify the ghost starts from A’s current visual bounds at interruption time, not from the original captured bounds or final bounds.
-[Robolectric] Rebound View is not mutated by stale animation
-Start animation for key A on V1. Before completion, rebind V1 to key B. Advance animation time. Verify the old A animation no longer mutates V1.
-[Robolectric] Same key moves to new View instance
-Key A starts animating on V1. Then V1 detaches and V2 represents A. Verify the transition follows key A safely and no later frame touches detached V1.
-[Robolectric] Detach during animation
-Detach an animating View, advance animation time, then call cancel and endAll. Verify no later operation mutates the detached View.
-[Robolectric] cancel(key) affects only one item
-Start transitions for A, B, and C. Call cancel("B"). Verify B reaches clean state or its ghost is removed, while A and C continue normally.
-[Robolectric] endAll cleanup
-Start move, resize, insert, and remove transitions. Call endAll(). Verify all real Views have clean final properties and all ghosts are removed exactly once.
-[Robolectric] No-change layout creates nothing
-Capture and animate with identical keys and bounds. Verify no ghost is created and no View properties change.
-[Robolectric] Ghost cleanup race
-Remove A, advance near completion, then call cancel("A"). Verify removeGhost("A") is still called exactly once.
-[Robolectric] Deterministic ghost order
-Remove multiple items with different previous child indices and keys. Verify ghosts are created in ascending previous child index, then lexicographic key, and each zOrder equals the previous child index.
-[Roborazzi] Move + resize midpoint visual check
-Capture A at old bounds, relayout it to different position and size, start transition, advance to 150ms, and capture a screenshot. Verify A appears halfway between old and new visual bounds with no jump.
-[Roborazzi] Removed item ghost midpoint visual check
-Remove A after capture, start transition, advance to 150ms, and capture a screenshot. Verify A still appears as a fading ghost at its old visual position.
-[Roborazzi] Interrupted transition visual continuity
-Start A moving from x = 0 to x = 100, advance to 40%, then relayout to x = 200 and restart transition. Capture after interruption. Verify A continues smoothly from the interruption position.
-[Roborazzi] Recycled View visual regression
-V1 starts as key A, then is rebound to key B while A continues on V2. Capture midpoint. Verify B does not visually inherit A’s translation, alpha, or scale.
+[Compose UI] Reorder follows keys, not indexes
+Start with A, B, C, then reorder to C, A, B. Verify each item animates from its old visual bounds to its new bounds by key, not by list index.
+[Compose UI] Resize without visual jump
+Render A with height 40, then recompose A with height 100. Verify the first frame after recomposition visually starts from height 40, then animates to 100.
+[Compose UI] Move and resize in the same transition
+Move A from lower in the list to higher in the list while also changing its measured size. Verify both position and size interpolate from the previous visual bounds.
+[Compose UI] Insert waits for final bounds
+Insert D between existing items. Verify D appears at its final list position with alpha animating from 0 to 1, and surrounding items animate to their new positions.
+[Compose UI] Removed item exits from last visual bounds
+Remove B while it is visible. Verify an exit copy remains at B’s last visual bounds and fades out without affecting current item layout.
+[Compose UI] Exit copy disposed exactly once
+Remove B, advance time past 300ms, and verify B is gone. Repeated recompositions or extra frame advancement must not create or dispose another exit copy.
+[Compose UI] Interrupted reorder starts from current visual bounds
+Start moving A from position 0 to 200. Advance to 40%, then reorder again so A should end at 80. Verify the new animation starts from the current visual position, not from 0 or 200.
+[Compose UI] Interrupted removal uses current visual bounds
+Start moving B, advance partially, then remove B. Verify the exit copy starts from B’s current animated bounds, not its original or final list bounds.
+[Compose UI] Reappearing key cancels duplicate exit
+Remove B, let its exit animation run halfway, then add B back. Verify there is only one visible B, and it continues from the current exit position/alpha into its new final state.
+[Compose UI] Content version change without size change
+Change A.contentVersion but keep the same measured size and position. Verify no movement/resize animation restarts unnecessarily.
+[Compose UI] Size change without content version change
+Keep the same key and contentVersion but change measured height through item content. Verify resize still animates.
+[Compose UI] Rapid repeated mutations
+Apply reorder, insert, remove, reinsert, and resize across several recompositions before earlier animations finish. Verify no duplicate keys are visible, no item jumps, and final layout is correct.
+[Compose UI] Determinism under equivalent recomposition
+Run the same sequence of item mutations multiple times. Verify final positions, active exits, and cleanup behavior are identical.
+[Roborazzi] Reorder midpoint visual regression
+Start A, B, C, reorder to C, A, B, advance to 150ms, and capture a screenshot. Verify all items are visually halfway between old and new positions with no jump.
+[Roborazzi] Resize midpoint visual regression
+Resize A from short to tall, advance to 150ms, and capture a screenshot. Verify intermediate size is visually correct.
+[Roborazzi] Removal ghost midpoint visual regression
+Remove B, advance to 150ms, and capture a screenshot. Verify B is still visible as a fading exit copy at its old position.
+[Roborazzi] Reappear during exit visual regression
+Remove B, advance halfway, then reinsert B elsewhere and capture a screenshot. Verify there is only one B, not one exiting copy plus one inserted copy.
 [Roborazzi] Mixed transition visual regression
-In one transition, move A, resize B, remove C, insert D, and reorder E/F. Capture start, midpoint, and end. Verify no duplicate item, missing ghost, stale transform, or visual jump.
-[Robolectric] Mixed complex state test
-In one update, move A, resize B, remove C, insert D, rebind one View, and reorder children. Verify no stale View mutation, correct ghost lifecycle, clean final state, and no duplicate cleanup.
+In one sequence, move A, resize B, remove C, insert D, and reinsert E during exit. Capture start, midpoint, and end. Verify no duplicate item, stale exit, missing item, or visual jump.
+
+
+
 Reference Solution
-The correct solution tracks transitions by logical key, never by View identity alone.
-On captureBeforeLayout():
-iterate through container children
-keep only participating children
-compute current visual bounds in container coordinates
-include active translation and scale
-store key -> visual bounds, child index, and View reference
-Current visual bounds should reflect what the user sees, not only layout bounds. For a View, that means using left/top/right/bottom plus current translation and scale.
-On animateAfterLayout():
-build the current post-layout key -> View/final bounds map
-compare captured keys with current keys
-existing key with changed bounds: animate real View from captured bounds to final bounds
-old key missing now: create a ghost and fade it out
-new key missing before: fade the real View in
-unchanged key: do nothing
-For moved/resized real Views, the View is already laid out at its final bounds. Initialize transforms so it visually appears at the captured bounds:
-translationX = oldLeft - newLeft
-translationY = oldTop - newTop
-scaleX = oldWidth / newWidth
-scaleY = oldHeight / newHeight
-pivotX = 0
-pivotY = 0
-Then animate back to:
-translationX = 0
-translationY = 0
-scaleX = 1
-scaleY = 1
-alpha = 1
-For inserted Views:
-set alpha = 0
-animate alpha to 1
-leave final alpha = 1
-For removed Views:
-create a ghost at the captured visual bounds
-set ghost alpha = 1
-animate ghost alpha to 0
-remove the ghost through an idempotent cleanup path
-Ghost cleanup must be guarded so removeGhost(key) is called exactly once, whether the animation completes, cancel(key) is called, or endAll() is called.
-For interruption:
-capture current visual bounds before replacing old animations
-cancel old animations without forcing stale final values
-start the new transition from those current visual bounds
-For recycled-view safety, every animation update must check:
-view.parent == container
-keyProvider(view) == key
-If either check fails, that animation must stop mutating the View.
-cancel(key):
-affects only that logical key
-cancels its active animator
-resets the real View only if it still belongs to that key
-removes its ghost exactly once
-leaves all other transitions running
-endAll():
-cancels all active animators
-resets all still-valid real Views to clean final state
-removes all ghosts exactly once
-clears active transition state
+The correct solution is based on logical-key transition state.
+Maintain state keyed by TransitionItem.key:
+current visual bounds
+target bounds
+animation start bounds
+animation start time/progress
+whether the key is entering, exiting, or present
+retained content for exiting keys
+On each composition/layout pass:
+Measure current items in order.
+Compute their final vertical bounds.
+Compare those final bounds with the previous visual state by key.
+For existing keys, animate from current visual bounds to new final bounds.
+For inserted keys, place at final bounds and animate alpha 0 -> 1.
+For removed keys, retain an exit copy at the last current visual bounds and animate alpha 1 -> 0.
+The important rule is that every new transition starts from the current visual bounds, not from stale previous layout bounds.
+For example:
+A is moving from y=0 to y=100.
+At 150ms, A is visually around y=50.
+A is then retargeted to y=200.
+The new animation starts from y=50, not y=0 or y=100.
+For reappearing keys:
+If B is exiting and B appears again before exit completes:
+- cancel the duplicate exit path
+- keep one visual B
+- start the new transition from B’s current visual bounds/alpha
+For removed keys:
+The item is no longer in the current item list, but its last composed content must be retained temporarily as an exit copy.
+That exit copy fades out and is removed exactly once after 300ms.
+For layout:
+Current items determine the measured height of the column.
+Exiting copies are drawn as overlays and do not affect measurement.
 For determinism:
-process keys in sorted order
-create ghosts in ascending previous child index, then key
-never rely on unordered maps for observable ordering
+Process keys in lexicographic order when resolving retained state.
+Draw current items in item order.
+Draw exiting overlays using their last known order, then key as tie-breaker.
+A solid implementation can be built with a custom Compose Layout or SubcomposeLayout, keeping per-key transition records in remembered state and advancing animations with Compose animation clocks. The essential correctness points are stable-key tracking, current-visual retargeting, retained exit content, single-instance reappearance handling, and exact cleanup after exit completion.
