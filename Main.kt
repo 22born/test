@@ -1,1 +1,1 @@
-
+Items and exit copies must use integer-pixel visual bounds. For animated bounds, interpolate x, y, width, and height as floats, then round each with roundToInt() before placement/drawing. Current items still occupy their final measured layout size from widthPx and heightPx; animated width/height affects only the visual transition. Exit copies are drawn after current items, so they appear above current items when their bounds overlap.
