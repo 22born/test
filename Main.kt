@@ -1,4 +1,1 @@
-Each item must be measured to exactly widthPx by heightPx pixels. widthPx and heightPx must be positive. A change to either value is a measured-bounds change and must animate resize.
-
-
-6. When an existing key’s `widthPx` or `heightPx` changes, it must animate from its previous visual bounds to its new measured bounds without jumping.
+Items and exit copies must be placed at integer pixel offsets. Animated x/y positions are rounded with `roundToInt()` before placement. Exit copies are drawn after current items, so they appear above current items when their bounds overlap.
