@@ -1,1 +1,1 @@
-Items and exit copies must be placed at integer pixel offsets. Animated x/y positions are rounded with `roundToInt()` before placement. Exit copies are drawn after current items, so they appear above current items when their bounds overlap.
+
