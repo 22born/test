@@ -1,3 +1,6 @@
+Use Jetpack Compose UI geometry/graphics APIs only. Do not use Android View, Canvas, Material component implementations, Material3 Shapes, RoundedCornerShape, CutCornerShape, or third-party shape libraries to generate the morph.
+
+
 # Material 3 Shape Morph Outline Engine
 
 ## Context
