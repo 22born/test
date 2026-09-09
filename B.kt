@@ -1,3 +1,38 @@
+
+
+If the reference solution computes column width as:
+maxWidth over all live records, including exit copies
+then the reference is wrong/inconsistent. That behavior makes a removed wide item keep widening the column while fading out, which contradicts “exit copies are overlays.”
+The reference should instead do:
+measuredWidth = max width of current items only
+measuredHeight = sum of current item measured heights only
+Exit copies may still be drawn/placed using their retained visual bounds, but they must not affect the parent layout size.
+Use this correction in the reference:
+val currentRecords = items.mapNotNull { item ->
+    records[item.key]?.takeIf { it.isCurrent }
+}
+
+val measuredWidth = currentRecords.maxOfOrNull { it.roundedWidth } ?: 0
+val measuredHeight = currentRecords.sumOf { it.roundedHeight }
+And separately render exits:
+val exitRecords = records.values.filter { it.isExiting }
+
+// Draw/place exitRecords as overlays.
+// Do not include them in measuredWidth or measuredHeight.
+So the rule should stay:
+Current items define measured layout. Exit copies are visual overlays only.
+Add this test to lock it:
+Remove a wide item while its exit animation is still visible. The remaining current item is narrow. Verify the column’s measured width equals the narrow current item’s animated width, not the exiting wide item’s width.
+
+
+
+
+
+
+
+
+
+
 Add one definition
 A live visual record is any key that is currently being drawn, either as a current item or as a retained exit copy, together with its current visual x, y, width, height, and alpha.
 Replace Requirement 2
