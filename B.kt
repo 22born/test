@@ -2,7 +2,9 @@ Animation duration is exactly 300ms total. Animation progress is sampled from `S
 
 
 
-
+Then update the test wording like this:
+[Robolectric/Roborazzi] clock-derived animation sampling
+Start at step 1 and animate to step 4. Advance the main looper clock to 100ms, 200ms, and 300ms after animation start, force draw/capture, and verify the endpoint is at steps 2, 3, and 4 respectively.
 
 
 
