@@ -1,4 +1,14 @@
-[Robolectric/Bitmap] completed/current/future colors
+Animation duration is exactly 300ms total. Animation progress is sampled from `SystemClock.uptimeMillis()` and must be correct for arbitrary main-looper clock times.
+
+
+
+
+
+
+
+
+
+Robolectric/Bitmap] completed/current/future colors
 At xhdpi, set stepCount = 4 and jumpToStep(3). Verify:
 - steps 1 and 2 have orange-filled interiors
 - step 3 has white interior and orange outline
