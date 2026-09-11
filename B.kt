@@ -1,3 +1,25 @@
+[Robolectric/Bitmap] completed/current/future colors
+At xhdpi, set stepCount = 4 and jumpToStep(3). Verify:
+- steps 1 and 2 have orange-filled interiors
+- step 3 has white interior and orange outline
+- step 4 has white interior and black outline
+- completed step text is white
+- current/future step text is black
+
+[Robolectric/Bitmap] bar colors
+At xhdpi, jumpToStep(3). Verify the active bar segment is orange and the remaining background bar is white.
+
+[Robolectric/Bitmap] bar border placement
+At xhdpi, verify the bar has black top and bottom borders and no left/right border.
+
+[Roborazzi] visual state regression
+Capture a settled mixed state with completed, current, and future steps visible. Verify colors, borders, text, and fill state together.
+
+[Roborazzi] completion timing visual
+Animate from step 1 to step 3. Capture just before step 2, exactly at step 2, and just after step 2. Verify step 2 changes future → current outline → completed fill.
+
+
+
 Yes, that is a real issue. The prompt/tests should be updated so animation progress is clock-derived, not callback-derived.
 The requirement should not merely say “use a 300ms linear animation.” It should say exactly how sampled frames are determined.
 Requirement update
