@@ -1,3 +1,30 @@
+## Rendering Logic
+
+The view displays audio samples as a horizontal waveform.
+
+The drawing area is the padded content bounds of the view. A gray baseline is drawn horizontally through the vertical center of that area.
+
+Each sample is a normalized float value:
+
+- `1f` is drawn at the top of the content bounds
+- `0f` is drawn on the center baseline
+- `-1f` is drawn at the bottom of the content bounds
+
+The latest samples are drawn from left to right. The oldest visible sample is placed at the left edge of the content bounds, and the newest visible sample is placed at the right edge.
+
+If there are `n >= 2` samples, sample `i` is positioned as:
+
+x = contentLeft + i * contentWidth / (n - 1)
+
+y = centerY - sample[i] * contentHeight / 2
+
+The waveform is drawn as one connected orange polyline through those points. If there are fewer than two samples, only the baseline is drawn.
+
+
+
+The visual output is an oscilloscope-like waveform: a gray center baseline with an orange connected line showing the latest normalized samples from oldest on the left to newest on the right.
+
+
 
 # Android Concurrent Waveform Snapshot View
 
