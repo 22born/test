@@ -1,3 +1,7 @@
+Each call to `appendSamples`, `setCapacity`, or `clear` must update the stored samples all at once. Drawing or snapshotting must see either the state before the call or the state after the call, never a half-finished update.
+
+
+
 ## Rendering Logic
 
 The view displays audio samples as a horizontal waveform.
