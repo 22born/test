@@ -1,3 +1,49 @@
+class IncrementalTileRendererView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0,
+    private val renderExecutor: Executor = Executors.newFixedThreadPool(2),
+    private val maxCacheTiles: Int = 64
+) : View(context, attrs, defStyleAttr) {
+
+    fun setScene(scene: TileScene) {
+        TODO("Implement")
+    }
+
+    fun setViewport(scale: Float, offsetX: Float, offsetY: Float) {
+        TODO("Implement")
+    }
+
+    fun clearCache() {
+        TODO("Implement")
+    }
+
+    fun debugState(): TileRendererDebugState {
+        TODO("Implement")
+    }
+}
+
+data class TileKey(val x: Int, val y: Int)
+
+data class TileRendererDebugState(
+    val currentSceneVersion: Long?,
+    val committedTiles: Set<TileKey>,
+    val pendingTiles: Set<TileKey>
+)
+
+
+Add one requirement:
+debugState() returns a stable snapshot of the current renderer state. It must not mutate renderer state, schedule tile jobs, wait for worker jobs, or expose mutable internal collections.
+Then the difficult tests become fairer:
+LRU eviction test:
+Use debugState().committedTiles to verify that the least-recently-used non-visible tile was evicted and the more recently used non-visible tile survived.
+
+Latest-wins test:
+Use debugState().currentSceneVersion to verify which scene version is current after raced setScene calls, then assert rendered pixels match that version.
+
+
+
+
 # Android Incremental Concurrent Tile Renderer View
 
 ## Context
