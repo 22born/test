@@ -1,4 +1,64 @@
+import android.content.Context
+import android.graphics.Color
+import android.util.AttributeSet
+import android.view.View
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+
 class IncrementalTileRendererView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0,
+    private val renderExecutor: Executor = Executors.newFixedThreadPool(2),
+    private val maxCacheTiles: Int = 64
+) : View(context, attrs, defStyleAttr) {
+
+    fun setScene(scene: TileScene) {
+        TODO("Implement")
+    }
+
+    fun setViewport(scale: Float, offsetX: Float, offsetY: Float) {
+        TODO("Implement")
+    }
+
+    fun clearCache() {
+        TODO("Implement")
+    }
+
+    fun debugState(): TileRendererDebugState {
+        TODO("Implement")
+    }
+}
+
+data class TileScene(
+    val version: Long,
+    val backgroundColor: Int = Color.TRANSPARENT,
+    val objects: List<SceneObject>
+)
+
+data class SceneObject(
+    val id: String,
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+    val color: Int
+)
+
+data class TileKey(
+    val x: Int,
+    val y: Int
+)
+
+data class TileRendererDebugState(
+    val currentSceneVersion: Long?,
+    val committedTiles: Set<TileKey>,
+    val pendingTiles: Set<TileKey>
+)
+
+
+
+lass IncrementalTileRendererView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
