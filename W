@@ -1,1 +1,1498 @@
+package com.example.morphingtext
 
+import java.text.BreakIterator
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.max
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
+
+
+/* ============================================================
+ * PUBLIC API
+ * ============================================================ */
+
+@Immutable
+data class MorphingTextAnimationSpec(
+    val exitDurationMillis: Int = 100,
+    val moveDurationMillis: Int = 200,
+    val enterDurationMillis: Int = 100,
+    val moveEasing: Easing = FastOutSlowInEasing,
+    val fadeEasing: Easing = LinearEasing,
+) {
+    init {
+        require(exitDurationMillis >= 0) {
+            "exitDurationMillis must be >= 0"
+        }
+        require(moveDurationMillis >= 0) {
+            "moveDurationMillis must be >= 0"
+        }
+        require(enterDurationMillis >= 0) {
+            "enterDurationMillis must be >= 0"
+        }
+    }
+
+    val totalDurationMillis: Int
+        get() =
+            exitDurationMillis +
+                moveDurationMillis +
+                enterDurationMillis
+}
+
+
+fun interface MorphingTextMatcher {
+    fun match(
+        old: List<Grapheme>,
+        new: List<Grapheme>,
+    ): List<Match>
+}
+
+
+/**
+ * Deterministic matching policy:
+ *
+ * 1. Maximize the number of reused graphemes.
+ * 2. Minimize total movement:
+ *      sum(abs(oldIndex - newIndex))
+ * 3. Preserve relative ordering.
+ * 4. If still tied, use the lexicographically smaller
+ *    sequence of Match(oldIndex, newIndex).
+ */
+object MinimumMovementMatcher : MorphingTextMatcher {
+
+    private data class Candidate(
+        val matches: List<Match>,
+        val movementCost: Int,
+    )
+
+    override fun match(
+        old: List<Grapheme>,
+        new: List<Grapheme>,
+    ): List<Match> {
+
+        if (old.isEmpty() || new.isEmpty()) {
+            return emptyList()
+        }
+
+        val memo =
+            HashMap<Long, Candidate>()
+
+        fun key(
+            oldIndex: Int,
+            newIndex: Int,
+        ): Long {
+            return (
+                oldIndex.toLong() shl 32
+            ) or (
+                newIndex.toLong() and 0xffffffffL
+            )
+        }
+
+        fun compareMatchLists(
+            first: List<Match>,
+            second: List<Match>,
+        ): Int {
+
+            val count =
+                minOf(
+                    first.size,
+                    second.size,
+                )
+
+            for (index in 0 until count) {
+
+                val a = first[index]
+                val b = second[index]
+
+                if (a.oldIndex != b.oldIndex) {
+                    return a.oldIndex.compareTo(
+                        b.oldIndex
+                    )
+                }
+
+                if (a.newIndex != b.newIndex) {
+                    return a.newIndex.compareTo(
+                        b.newIndex
+                    )
+                }
+            }
+
+            return first.size.compareTo(
+                second.size
+            )
+        }
+
+        fun better(
+            first: Candidate,
+            second: Candidate,
+        ): Candidate {
+
+            if (
+                first.matches.size !=
+                second.matches.size
+            ) {
+                return if (
+                    first.matches.size >
+                    second.matches.size
+                ) {
+                    first
+                } else {
+                    second
+                }
+            }
+
+            if (
+                first.movementCost !=
+                second.movementCost
+            ) {
+                return if (
+                    first.movementCost <
+                    second.movementCost
+                ) {
+                    first
+                } else {
+                    second
+                }
+            }
+
+            return if (
+                compareMatchLists(
+                    first.matches,
+                    second.matches,
+                ) <= 0
+            ) {
+                first
+            } else {
+                second
+            }
+        }
+
+        fun solve(
+            oldIndex: Int,
+            newIndex: Int,
+        ): Candidate {
+
+            if (
+                oldIndex >= old.size ||
+                newIndex >= new.size
+            ) {
+                return Candidate(
+                    matches = emptyList(),
+                    movementCost = 0,
+                )
+            }
+
+            val cacheKey =
+                key(
+                    oldIndex,
+                    newIndex,
+                )
+
+            memo[cacheKey]?.let {
+                return it
+            }
+
+            /*
+             * Option 1:
+             * remove the current old grapheme.
+             */
+            var best =
+                solve(
+                    oldIndex + 1,
+                    newIndex,
+                )
+
+            /*
+             * Option 2:
+             * insert the current new grapheme.
+             */
+            best =
+                better(
+                    best,
+                    solve(
+                        oldIndex,
+                        newIndex + 1,
+                    ),
+                )
+
+            /*
+             * Option 3:
+             * reuse the grapheme.
+             */
+            if (
+                old[oldIndex].text ==
+                new[newIndex].text
+            ) {
+
+                val suffix =
+                    solve(
+                        oldIndex + 1,
+                        newIndex + 1,
+                    )
+
+                val candidate =
+                    Candidate(
+                        matches =
+                            buildList {
+                                add(
+                                    Match(
+                                        oldIndex =
+                                            oldIndex,
+                                        newIndex =
+                                            newIndex,
+                                    )
+                                )
+                                addAll(
+                                    suffix.matches
+                                )
+                            },
+
+                        movementCost =
+                            abs(
+                                oldIndex -
+                                newIndex
+                            ) +
+                                suffix.movementCost,
+                    )
+
+                best =
+                    better(
+                        best,
+                        candidate,
+                    )
+            }
+
+            memo[cacheKey] =
+                best
+
+            return best
+        }
+
+        return solve(
+            oldIndex = 0,
+            newIndex = 0,
+        ).matches
+    }
+}
+
+
+/**
+ * MorphingText
+ *
+ * Designed for short, single-line LTR words/labels.
+ *
+ * Transition:
+ *
+ * REMOVE -> MOVE -> INSERT
+ *
+ * During a transition:
+ *
+ * - old unmatched graphemes fade out in place;
+ * - surviving old graphemes move;
+ * - only genuinely new graphemes fade in;
+ * - the complete destination word is NOT drawn.
+ *
+ * The complete destination word is committed and drawn only
+ * after the entire transition has finished.
+ *
+ * Rapid updates:
+ *
+ * If another value arrives while a transition is running,
+ * the active transition finishes. Intermediate pending values
+ * are discarded and the next transition goes directly to the
+ * latest requested value.
+ */
+@Composable
+fun MorphingText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = LocalTextStyle.current,
+    animationSpec: MorphingTextAnimationSpec =
+        MorphingTextAnimationSpec(),
+    matcher: MorphingTextMatcher =
+        MinimumMovementMatcher,
+) {
+
+    val textMeasurer =
+        rememberTextMeasurer(
+            cacheSize = 64
+        )
+
+    /*
+     * The only stable value the component has actually reached.
+     *
+     * IMPORTANT:
+     * incoming `text` does NOT directly replace this.
+     */
+    var committedText by remember {
+        mutableStateOf(text)
+    }
+
+    /*
+     * The transition currently owning the renderer.
+     *
+     * If non-null, the complete old/new words must NOT be
+     * rendered independently.
+     */
+    var activePlan by remember {
+        mutableStateOf<TransitionPlan?>(null)
+    }
+
+    /*
+     * Latest requested value.
+     *
+     * rememberUpdatedState lets a running coroutine observe
+     * the newest caller value without being cancelled because
+     * that value changed.
+     */
+    val latestRequestedText by
+        rememberUpdatedState(text)
+
+    val latestAnimationSpec by
+        rememberUpdatedState(animationSpec)
+
+    val latestMatcher by
+        rememberUpdatedState(matcher)
+
+    /*
+     * Normalized transition progress:
+     *
+     * 0f -> 1f
+     */
+    val progress =
+        remember {
+            Animatable(1f)
+        }
+
+    /*
+     * Wake-up signal.
+     *
+     * Changing `text` restarts this effect. The currently
+     * running animation itself is NOT performed here.
+     */
+    var requestedText by remember {
+        mutableStateOf(text)
+    }
+
+    LaunchedEffect(text) {
+        requestedText = text
+    }
+
+    /*
+     * Transition worker.
+     *
+     * IMPORTANT:
+     * This effect is keyed by requestedText only when idle.
+     *
+     * A running animation operates against a captured
+     * destination.
+     */
+    LaunchedEffect(
+        committedText,
+        requestedText,
+        activePlan == null,
+    ) {
+
+        /*
+         * Never start another transition while one owns
+         * the renderer.
+         */
+        if (activePlan != null) {
+            return@LaunchedEffect
+        }
+
+        if (
+            committedText ==
+            requestedText
+        ) {
+            return@LaunchedEffect
+        }
+
+        /*
+         * Capture destination.
+         *
+         * Changes to requestedText after this point must NOT
+         * alter this active transition.
+         */
+        val destination =
+            requestedText
+
+        val source =
+            committedText
+
+        /*
+         * Capture configuration for this transition.
+         */
+        val spec =
+            latestAnimationSpec
+
+        val currentMatcher =
+            latestMatcher
+
+        val plan =
+            createTransitionPlan(
+                oldText = source,
+                newText = destination,
+                matcher = currentMatcher,
+            )
+
+        /*
+         * From this point until completion the transition
+         * exclusively owns rendering.
+         */
+        activePlan =
+            plan
+
+        if (
+            spec.totalDurationMillis == 0
+        ) {
+
+            progress.snapTo(1f)
+
+        } else {
+
+            progress.snapTo(0f)
+
+            progress.animateTo(
+                targetValue = 1f,
+                animationSpec =
+                    tween(
+                        durationMillis =
+                            spec.totalDurationMillis,
+                        easing =
+                            LinearEasing,
+                    ),
+            )
+        }
+
+        /*
+         * Only NOW does the destination become the stable word.
+         */
+        committedText =
+            destination
+
+        /*
+         * Release transition ownership.
+         *
+         * After this point stable rendering draws destination.
+         */
+        activePlan =
+            null
+
+        /*
+         * If requestedText changed during the animation,
+         * recomposition will see:
+         *
+         * committedText != requestedText
+         *
+         * and start exactly one transition to the latest value.
+         */
+    }
+
+
+    /* ========================================================
+     * DETERMINE EXACTLY WHAT MAY BE RENDERED
+     * ======================================================== */
+
+    val plan =
+        activePlan
+
+    /*
+     * While animating these values are frozen to the active
+     * transition.
+     *
+     * Incoming `text` cannot change them.
+     */
+    val visualOldText =
+        plan?.oldText
+            ?: committedText
+
+    val visualNewText =
+        plan?.newText
+            ?: committedText
+
+
+    /* ========================================================
+     * SEGMENT
+     * ======================================================== */
+
+    val oldGraphemes =
+        remember(
+            visualOldText
+        ) {
+            segmentGraphemes(
+                visualOldText
+            )
+        }
+
+    val newGraphemes =
+        remember(
+            visualNewText
+        ) {
+            segmentGraphemes(
+                visualNewText
+            )
+        }
+
+
+    /* ========================================================
+     * MEASURE
+     * ======================================================== */
+
+    val oldWord =
+        remember(
+            visualOldText,
+            style,
+            textMeasurer,
+        ) {
+            measureWord(
+                text =
+                    visualOldText,
+                graphemes =
+                    oldGraphemes,
+                textMeasurer =
+                    textMeasurer,
+                style =
+                    style,
+            )
+        }
+
+    val newWord =
+        remember(
+            visualNewText,
+            style,
+            textMeasurer,
+        ) {
+            measureWord(
+                text =
+                    visualNewText,
+                graphemes =
+                    newGraphemes,
+                textMeasurer =
+                    textMeasurer,
+                style =
+                    style,
+            )
+        }
+
+
+    /* ========================================================
+     * SIZE
+     * ======================================================== */
+
+    val widthPx =
+        max(
+            oldWord.width,
+            newWord.width,
+        )
+
+    val heightPx =
+        max(
+            oldWord.height,
+            newWord.height,
+        )
+
+    val density =
+        LocalDensity.current
+
+    val widthDp =
+        with(density) {
+            widthPx.toDp()
+        }
+
+    val heightDp =
+        with(density) {
+            heightPx.toDp()
+        }
+
+
+    /* ========================================================
+     * RENDER
+     * ======================================================== */
+
+    Canvas(
+        modifier =
+            modifier
+                .requiredSize(
+                    width =
+                        widthDp,
+                    height =
+                        heightDp,
+                )
+                .semantics {
+
+                    /*
+                     * The semantic value changes only when the
+                     * visual transition has completely finished.
+                     */
+                    this.text =
+                        AnnotatedString(
+                            committedText
+                        )
+                }
+    ) {
+
+        val currentPlan =
+            activePlan
+
+        if (currentPlan == null) {
+
+            /*
+             * IDLE
+             *
+             * There is exactly ONE complete word on screen:
+             *
+             * committedText
+             */
+            drawStableWord(
+                word = oldWord
+            )
+
+        } else {
+
+            /*
+             * ANIMATING
+             *
+             * This branch owns ALL text rendering.
+             *
+             * DO NOT call drawStableWord() here.
+             * DO NOT draw the complete destination word here.
+             */
+            val phase =
+                calculatePhaseProgress(
+                    progress =
+                        progress.value,
+                    spec =
+                        latestAnimationSpec,
+                )
+
+            drawTransition(
+                plan =
+                    currentPlan,
+                oldWord =
+                    oldWord,
+                newWord =
+                    newWord,
+                phase =
+                    phase,
+                spec =
+                    latestAnimationSpec,
+            )
+        }
+    }
+}
+
+
+/* ============================================================
+ * MODEL
+ * ============================================================ */
+
+@Immutable
+data class Grapheme(
+    val text: String,
+    val startOffset: Int,
+    val endOffset: Int,
+)
+
+
+@Immutable
+data class Match(
+    val oldIndex: Int,
+    val newIndex: Int,
+)
+
+
+@Immutable
+data class TransitionPlan(
+    val oldText: String,
+    val newText: String,
+    val old: List<Grapheme>,
+    val new: List<Grapheme>,
+    val matches: List<Match>,
+    val removedOldIndices: Set<Int>,
+    val insertedNewIndices: Set<Int>,
+)
+
+
+/* ============================================================
+ * GRAPHEME SEGMENTATION
+ * ============================================================ */
+
+internal fun segmentGraphemes(
+    text: String,
+    locale: Locale =
+        Locale.getDefault(),
+): List<Grapheme> {
+
+    if (text.isEmpty()) {
+        return emptyList()
+    }
+
+    val iterator =
+        BreakIterator
+            .getCharacterInstance(
+                locale
+            )
+
+    iterator.setText(text)
+
+    val result =
+        ArrayList<Grapheme>()
+
+    var start =
+        iterator.first()
+
+    var end =
+        iterator.next()
+
+    while (
+        end != BreakIterator.DONE
+    ) {
+
+        result +=
+            Grapheme(
+                text =
+                    text.substring(
+                        start,
+                        end,
+                    ),
+                startOffset =
+                    start,
+                endOffset =
+                    end,
+            )
+
+        start =
+            end
+
+        end =
+            iterator.next()
+    }
+
+    return result
+}
+
+
+/* ============================================================
+ * TRANSITION PLANNING
+ * ============================================================ */
+
+internal fun createTransitionPlan(
+    oldText: String,
+    newText: String,
+    matcher: MorphingTextMatcher =
+        MinimumMovementMatcher,
+): TransitionPlan {
+
+    val old =
+        segmentGraphemes(
+            oldText
+        )
+
+    val new =
+        segmentGraphemes(
+            newText
+        )
+
+    val matches =
+        matcher.match(
+            old = old,
+            new = new,
+        )
+
+    validateMatches(
+        old = old,
+        new = new,
+        matches = matches,
+    )
+
+    val matchedOld =
+        matches
+            .mapTo(
+                HashSet()
+            ) {
+                it.oldIndex
+            }
+
+    val matchedNew =
+        matches
+            .mapTo(
+                HashSet()
+            ) {
+                it.newIndex
+            }
+
+    val removed =
+        old.indices
+            .filterTo(
+                LinkedHashSet()
+            ) {
+                it !in matchedOld
+            }
+
+    val inserted =
+        new.indices
+            .filterTo(
+                LinkedHashSet()
+            ) {
+                it !in matchedNew
+            }
+
+    return TransitionPlan(
+        oldText =
+            oldText,
+        newText =
+            newText,
+        old =
+            old,
+        new =
+            new,
+        matches =
+            matches,
+        removedOldIndices =
+            removed,
+        insertedNewIndices =
+            inserted,
+    )
+}
+
+
+private fun validateMatches(
+    old: List<Grapheme>,
+    new: List<Grapheme>,
+    matches: List<Match>,
+) {
+
+    var previousOld =
+        -1
+
+    var previousNew =
+        -1
+
+    val seenOld =
+        HashSet<Int>()
+
+    val seenNew =
+        HashSet<Int>()
+
+    for (match in matches) {
+
+        require(
+            match.oldIndex in
+                old.indices
+        ) {
+            "Invalid oldIndex=${match.oldIndex}"
+        }
+
+        require(
+            match.newIndex in
+                new.indices
+        ) {
+            "Invalid newIndex=${match.newIndex}"
+        }
+
+        require(
+            seenOld.add(
+                match.oldIndex
+            )
+        ) {
+            "oldIndex=${match.oldIndex} matched more than once"
+        }
+
+        require(
+            seenNew.add(
+                match.newIndex
+            )
+        ) {
+            "newIndex=${match.newIndex} matched more than once"
+        }
+
+        require(
+            old[match.oldIndex].text ==
+                new[match.newIndex].text
+        ) {
+            "Matcher matched different graphemes"
+        }
+
+        require(
+            match.oldIndex >
+                previousOld &&
+                match.newIndex >
+                previousNew
+        ) {
+            "Matches must preserve relative order"
+        }
+
+        previousOld =
+            match.oldIndex
+
+        previousNew =
+            match.newIndex
+    }
+}
+
+
+/* ============================================================
+ * TIMELINE
+ * ============================================================ */
+
+@Immutable
+internal data class PhaseProgress(
+    val exit: Float,
+    val move: Float,
+    val enter: Float,
+)
+
+
+internal fun calculatePhaseProgress(
+    progress: Float,
+    spec: MorphingTextAnimationSpec,
+): PhaseProgress {
+
+    val normalized =
+        progress.coerceIn(
+            0f,
+            1f,
+        )
+
+    val total =
+        spec.totalDurationMillis
+
+    if (total == 0) {
+        return PhaseProgress(
+            exit = 1f,
+            move = 1f,
+            enter = 1f,
+        )
+    }
+
+    val time =
+        normalized *
+            total.toFloat()
+
+    val moveStart =
+        spec
+            .exitDurationMillis
+            .toFloat()
+
+    val enterStart =
+        (
+            spec.exitDurationMillis +
+                spec.moveDurationMillis
+        ).toFloat()
+
+    return PhaseProgress(
+        exit =
+            phaseFraction(
+                time =
+                    time,
+                start =
+                    0f,
+                durationMillis =
+                    spec.exitDurationMillis,
+            ),
+
+        move =
+            phaseFraction(
+                time =
+                    time,
+                start =
+                    moveStart,
+                durationMillis =
+                    spec.moveDurationMillis,
+            ),
+
+        enter =
+            phaseFraction(
+                time =
+                    time,
+                start =
+                    enterStart,
+                durationMillis =
+                    spec.enterDurationMillis,
+            ),
+    )
+}
+
+
+private fun phaseFraction(
+    time: Float,
+    start: Float,
+    durationMillis: Int,
+): Float {
+
+    if (
+        durationMillis == 0
+    ) {
+        return if (
+            time >= start
+        ) {
+            1f
+        } else {
+            0f
+        }
+    }
+
+    return (
+        (time - start) /
+            durationMillis.toFloat()
+    ).coerceIn(
+        0f,
+        1f,
+    )
+}
+
+
+/* ============================================================
+ * MEASUREMENT
+ * ============================================================ */
+
+@Immutable
+internal data class MeasuredGrapheme(
+    val grapheme: Grapheme,
+
+    /*
+     * X position in the complete shaped word.
+     */
+    val x: Float,
+
+    /*
+     * Independently drawable layout.
+     *
+     * Premeasured OUTSIDE DrawScope.
+     */
+    val isolatedLayout: TextLayoutResult,
+)
+
+
+@Immutable
+internal data class MeasuredWord(
+    val text: String,
+    val fullLayout: TextLayoutResult?,
+    val graphemes: List<MeasuredGrapheme>,
+    val width: Float,
+    val height: Float,
+)
+
+
+private fun measureWord(
+    text: String,
+    graphemes: List<Grapheme>,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+): MeasuredWord {
+
+    /*
+     * Preserve sensible height even when text is empty.
+     */
+    if (
+        text.isEmpty()
+    ) {
+
+        val probe =
+            textMeasurer.measure(
+                text =
+                    AnnotatedString("Mg"),
+                style =
+                    style,
+                softWrap =
+                    false,
+                maxLines =
+                    1,
+                constraints =
+                    Constraints(),
+            )
+
+        return MeasuredWord(
+            text =
+                text,
+            fullLayout =
+                null,
+            graphemes =
+                emptyList(),
+            width =
+                0f,
+            height =
+                probe.size.height.toFloat(),
+        )
+    }
+
+    /*
+     * Full word measurement.
+     *
+     * Used for:
+     *
+     * - stable rendering;
+     * - target/source positioning.
+     */
+    val fullLayout =
+        textMeasurer.measure(
+            text =
+                AnnotatedString(text),
+            style =
+                style,
+            softWrap =
+                false,
+            maxLines =
+                1,
+            constraints =
+                Constraints(),
+        )
+
+    val measured =
+        graphemes.map {
+                grapheme ->
+
+            /*
+             * For this single-line LTR component,
+             * use the grapheme's first text offset to obtain
+             * its visual starting X.
+             */
+            val boundingBox =
+                fullLayout.getBoundingBox(
+                    grapheme.startOffset
+                )
+
+            /*
+             * Premeasure the independently drawable object.
+             */
+            val isolatedLayout =
+                textMeasurer.measure(
+                    text =
+                        AnnotatedString(
+                            grapheme.text
+                        ),
+                    style =
+                        style,
+                    softWrap =
+                        false,
+                    maxLines =
+                        1,
+                    constraints =
+                        Constraints(),
+                )
+
+            MeasuredGrapheme(
+                grapheme =
+                    grapheme,
+                x =
+                    boundingBox.left,
+                isolatedLayout =
+                    isolatedLayout,
+            )
+        }
+
+    return MeasuredWord(
+        text =
+            text,
+        fullLayout =
+            fullLayout,
+        graphemes =
+            measured,
+        width =
+            fullLayout
+                .size
+                .width
+                .toFloat(),
+        height =
+            fullLayout
+                .size
+                .height
+                .toFloat(),
+    )
+}
+
+
+/* ============================================================
+ * RENDERING
+ * ============================================================ */
+
+private fun DrawScope.drawStableWord(
+    word: MeasuredWord,
+) {
+
+    val layout =
+        word.fullLayout
+            ?: return
+
+    /*
+     * Stable state:
+     *
+     * exactly ONE complete word.
+     */
+    drawText(
+        textLayoutResult =
+            layout,
+        topLeft =
+            Offset.Zero,
+    )
+}
+
+
+private fun DrawScope.drawTransition(
+    plan: TransitionPlan,
+    oldWord: MeasuredWord,
+    newWord: MeasuredWord,
+    phase: PhaseProgress,
+    spec: MorphingTextAnimationSpec,
+) {
+
+    val exitProgress =
+        spec
+            .fadeEasing
+            .transform(
+                phase.exit
+            )
+            .coerceIn(
+                0f,
+                1f,
+            )
+
+    val moveProgress =
+        spec
+            .moveEasing
+            .transform(
+                phase.move
+            )
+            .coerceIn(
+                0f,
+                1f,
+            )
+
+    val enterProgress =
+        spec
+            .fadeEasing
+            .transform(
+                phase.enter
+            )
+            .coerceIn(
+                0f,
+                1f,
+            )
+
+
+    /* --------------------------------------------------------
+     * MATCH LOOKUPS
+     * -------------------------------------------------------- */
+
+    val matchByOldIndex =
+        plan.matches
+            .associateBy {
+                it.oldIndex
+            }
+
+    val matchedNewIndices =
+        plan.matches
+            .mapTo(
+                HashSet()
+            ) {
+                it.newIndex
+            }
+
+
+    /* --------------------------------------------------------
+     * OLD OBJECTS
+     *
+     * Every old grapheme is drawn exactly once.
+     *
+     * Unmatched:
+     *      stays at old X
+     *      fades out
+     *
+     * Matched:
+     *      stays opaque
+     *      moves old X -> new X
+     * -------------------------------------------------------- */
+
+    oldWord.graphemes
+        .forEachIndexed {
+                oldIndex,
+                oldGrapheme ->
+
+            val match =
+                matchByOldIndex[
+                    oldIndex
+                ]
+
+            if (
+                match == null
+            ) {
+
+                /*
+                 * REMOVE
+                 */
+                drawAnimatedGrapheme(
+                    grapheme =
+                        oldGrapheme,
+                    x =
+                        oldGrapheme.x,
+                    alpha =
+                        1f -
+                            exitProgress,
+                )
+
+            } else {
+
+                /*
+                 * KEEP / MOVE
+                 */
+                val destination =
+                    newWord.graphemes[
+                        match.newIndex
+                    ]
+
+                val x =
+                    lerp(
+                        start =
+                            oldGrapheme.x,
+                        end =
+                            destination.x,
+                        fraction =
+                            moveProgress,
+                    )
+
+                drawAnimatedGrapheme(
+                    grapheme =
+                        oldGrapheme,
+                    x =
+                        x,
+                    alpha =
+                        1f,
+                )
+            }
+        }
+
+
+    /* --------------------------------------------------------
+     * NEW OBJECTS
+     *
+     * IMPORTANT:
+     *
+     * matched destination graphemes are NEVER drawn here.
+     *
+     * They are already represented by surviving old objects.
+     *
+     * This prevents:
+     *
+     * old-a + new-a
+     * old-r + new-r
+     *
+     * from being visible simultaneously.
+     * -------------------------------------------------------- */
+
+    newWord.graphemes
+        .forEachIndexed {
+                newIndex,
+                newGrapheme ->
+
+            if (
+                newIndex in
+                matchedNewIndices
+            ) {
+
+                /*
+                 * Already represented by a surviving
+                 * old object.
+                 */
+                return@forEachIndexed
+            }
+
+            /*
+             * INSERT
+             *
+             * Before INSERT starts:
+             * alpha = 0
+             *
+             * During INSERT:
+             * alpha = 0 -> 1
+             */
+            drawAnimatedGrapheme(
+                grapheme =
+                    newGrapheme,
+                x =
+                    newGrapheme.x,
+                alpha =
+                    enterProgress,
+            )
+        }
+}
+
+
+private fun DrawScope.drawAnimatedGrapheme(
+    grapheme: MeasuredGrapheme,
+    x: Float,
+    alpha: Float,
+) {
+
+    /*
+     * alpha == 0:
+     * don't issue a draw command at all.
+     */
+    if (
+        alpha <= 0f
+    ) {
+        return
+    }
+
+    drawText(
+        textLayoutResult =
+            grapheme.isolatedLayout,
+        topLeft =
+            Offset(
+                x = x,
+                y = 0f,
+            ),
+        alpha =
+            alpha.coerceIn(
+                0f,
+                1f,
+            ),
+    )
+}
+
+
+private fun lerp(
+    start: Float,
+    end: Float,
+    fraction: Float,
+): Float {
+
+    val f =
+        fraction.coerceIn(
+            0f,
+            1f,
+        )
+
+    return start +
+        (
+            end - start
+        ) * f
+}
