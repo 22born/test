@@ -38,9 +38,16 @@ import kotlinx.coroutines.channels.Channel
 /* ============================================================
  * ANIMATION SPEC
  *
- * CHANGE YOUR DEFAULTS HERE.
+ * These values are the actual animation durations.
  *
- * These durations are the ACTUAL fade/movement durations.
+ * exitDurationMillis:
+ *     old-only glyph alpha 1 -> 0
+ *
+ * moveDurationMillis:
+ *     survivor position oldX -> newX
+ *
+ * enterDurationMillis:
+ *     new-only glyph alpha 0 -> 1
  * ============================================================ */
 
 @Immutable
@@ -64,15 +71,6 @@ data class MorphingTextAnimationSpec(
         }
     }
 
-    val moveStartMillis: Int
-        get() =
-            exitDurationMillis
-
-    val enterStartMillis: Int
-        get() =
-            exitDurationMillis +
-                moveDurationMillis
-
     val totalDurationMillis: Int
         get() =
             exitDurationMillis +
@@ -82,7 +80,7 @@ data class MorphingTextAnimationSpec(
 
 
 /* ============================================================
- * PUBLIC MODELS
+ * GRAPHEME
  * ============================================================ */
 
 @Immutable
@@ -93,12 +91,20 @@ data class Grapheme(
 )
 
 
+/* ============================================================
+ * MATCH
+ * ============================================================ */
+
 @Immutable
 data class Match(
     val oldIndex: Int,
     val newIndex: Int,
 )
 
+
+/* ============================================================
+ * MATCHER CONTRACT
+ * ============================================================ */
 
 fun interface MorphingTextMatcher {
 
@@ -110,14 +116,14 @@ fun interface MorphingTextMatcher {
 
 
 /* ============================================================
- * MATCHER
+ * DEFAULT MATCHER
  *
- * Deterministic priority:
+ * Rules:
  *
  * 1. Reuse maximum number of graphemes.
- * 2. Minimize total index movement.
- * 3. Preserve ordering.
- * 4. Lexicographic tie-break.
+ * 2. Minimize total movement.
+ * 3. Preserve relative order.
+ * 4. Deterministic tie-break.
  * ============================================================ */
 
 object MinimumMovementMatcher : MorphingTextMatcher {
@@ -126,6 +132,7 @@ object MinimumMovementMatcher : MorphingTextMatcher {
         val matches: List<Match>,
         val movementCost: Int,
     )
+
 
     override fun match(
         old: List<Grapheme>,
@@ -139,21 +146,24 @@ object MinimumMovementMatcher : MorphingTextMatcher {
             return emptyList()
         }
 
+
         val memo =
             HashMap<Pair<Int, Int>, Candidate>()
+
 
         fun compareMatches(
             first: List<Match>,
             second: List<Match>,
         ): Int {
 
-            val size =
+            val count =
                 minOf(
                     first.size,
                     second.size,
                 )
 
-            for (index in 0 until size) {
+
+            for (index in 0 until count) {
 
                 val a =
                     first[index]
@@ -161,32 +171,33 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                 val b =
                     second[index]
 
+
                 if (
                     a.oldIndex !=
                     b.oldIndex
                 ) {
-                    return a.oldIndex
-                        .compareTo(
-                            b.oldIndex
-                        )
+                    return a.oldIndex.compareTo(
+                        b.oldIndex
+                    )
                 }
+
 
                 if (
                     a.newIndex !=
                     b.newIndex
                 ) {
-                    return a.newIndex
-                        .compareTo(
-                            b.newIndex
-                        )
+                    return a.newIndex.compareTo(
+                        b.newIndex
+                    )
                 }
             }
 
-            return first.size
-                .compareTo(
-                    second.size
-                )
+
+            return first.size.compareTo(
+                second.size
+            )
         }
+
 
         fun better(
             first: Candidate,
@@ -194,7 +205,8 @@ object MinimumMovementMatcher : MorphingTextMatcher {
         ): Candidate {
 
             /*
-             * Reuse as many as possible.
+             * Priority 1:
+             * reuse maximum graphemes.
              */
             if (
                 first.matches.size !=
@@ -210,8 +222,10 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                 }
             }
 
+
             /*
-             * Then minimize movement.
+             * Priority 2:
+             * minimum movement.
              */
             if (
                 first.movementCost !=
@@ -227,8 +241,10 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                 }
             }
 
+
             /*
-             * Final deterministic tie-break.
+             * Priority 3:
+             * deterministic tie-break.
              */
             return if (
                 compareMatches(
@@ -241,6 +257,7 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                 second
             }
         }
+
 
         fun solve(
             oldIndex: Int,
@@ -259,16 +276,19 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                 )
             }
 
+
             val key =
                 oldIndex to newIndex
+
 
             memo[key]?.let {
                 return it
             }
 
+
             /*
              * Option 1:
-             * remove old grapheme.
+             * old grapheme is removed.
              */
             var best =
                 solve(
@@ -276,9 +296,10 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                     newIndex,
                 )
 
+
             /*
              * Option 2:
-             * insert new grapheme.
+             * new grapheme is inserted.
              */
             best =
                 better(
@@ -289,9 +310,10 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                     ),
                 )
 
+
             /*
              * Option 3:
-             * reuse.
+             * reuse grapheme.
              */
             if (
                 old[oldIndex].text ==
@@ -303,6 +325,7 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                         oldIndex + 1,
                         newIndex + 1,
                     )
+
 
                 val candidate =
                     Candidate(
@@ -325,6 +348,7 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                                 suffix.movementCost,
                     )
 
+
                 best =
                     better(
                         best,
@@ -332,11 +356,14 @@ object MinimumMovementMatcher : MorphingTextMatcher {
                     )
             }
 
+
             memo[key] =
                 best
 
+
             return best
         }
+
 
         return solve(
             oldIndex = 0,
@@ -362,9 +389,6 @@ data class TransitionPlan(
 )
 
 
-/*
- * Spec is frozen for the lifetime of this transition.
- */
 @Immutable
 private data class ActiveTransition(
     val plan: TransitionPlan,
@@ -373,7 +397,7 @@ private data class ActiveTransition(
 
 
 /* ============================================================
- * COMPOSABLE
+ * MORPHING TEXT
  * ============================================================ */
 
 @Composable
@@ -393,52 +417,90 @@ fun MorphingText(
         )
 
 
-    /* --------------------------------------------------------
+    /* ========================================================
      * COMMITTED TEXT
      *
-     * Changes only after the complete animation finishes.
-     * -------------------------------------------------------- */
+     * This is the text that has COMPLETELY finished animating.
+     *
+     * Accessibility semantics also use this.
+     * ======================================================== */
 
     var committedText by remember {
         mutableStateOf(text)
     }
 
 
-    /* --------------------------------------------------------
+    /* ========================================================
      * ACTIVE TRANSITION
      *
-     * null = stable.
-     * -------------------------------------------------------- */
+     * null = idle
+     * ======================================================== */
 
     var activeTransition by remember {
         mutableStateOf<ActiveTransition?>(null)
     }
 
 
-    /* --------------------------------------------------------
-     * ELAPSED ANIMATION TIME
+    /* ========================================================
+     * ACTUAL VISUAL ANIMATION VALUES
      *
-     * This is the important change.
+     * These are deliberately separate.
      *
-     * We animate:
-     *
-     * 0ms -> totalDurationMillis
-     *
-     * linearly.
-     * -------------------------------------------------------- */
+     * No normalized global timeline.
+     * No phase conversion.
+     * No duration-as-delay.
+     * ======================================================== */
 
-    val elapsedMillis =
+
+    /*
+     * REMOVE
+     *
+     * 1 = fully visible
+     * 0 = invisible
+     */
+    val exitAlpha =
         remember {
-            Animatable(0f)
+            Animatable(
+                initialValue = 1f
+            )
         }
 
 
-    /* --------------------------------------------------------
+    /*
+     * MOVE
+     *
+     * 0 = old position
+     * 1 = destination position
+     */
+    val moveProgress =
+        remember {
+            Animatable(
+                initialValue = 0f
+            )
+        }
+
+
+    /*
+     * INSERT
+     *
+     * 0 = invisible
+     * 1 = fully visible
+     */
+    val enterAlpha =
+        remember {
+            Animatable(
+                initialValue = 0f
+            )
+        }
+
+
+    /* ========================================================
      * REQUEST QUEUE
      *
-     * Conflated:
-     * while animation runs, only latest target is retained.
-     * -------------------------------------------------------- */
+     * Finish current transition.
+     *
+     * While it runs, keep only the latest requested text.
+     * ======================================================== */
 
     val requests =
         remember {
@@ -450,13 +512,16 @@ fun MorphingText(
 
 
     /*
-     * Allow worker to obtain latest configuration without
-     * restarting/cancelling itself.
+     * Worker is long-lived.
+     *
+     * These wrappers allow it to read latest configuration
+     * without restarting the coroutine.
      */
     val latestSpec by
         rememberUpdatedState(
             animationSpec
         )
+
 
     val latestMatcher by
         rememberUpdatedState(
@@ -465,7 +530,7 @@ fun MorphingText(
 
 
     /* ========================================================
-     * PRODUCER
+     * TARGET PRODUCER
      * ======================================================== */
 
     LaunchedEffect(text) {
@@ -473,6 +538,7 @@ fun MorphingText(
         if (
             text != committedText
         ) {
+
             requests.trySend(
                 text
             )
@@ -481,7 +547,7 @@ fun MorphingText(
 
 
     /* ========================================================
-     * SINGLE LONG-LIVED WORKER
+     * ANIMATION WORKER
      * ======================================================== */
 
     LaunchedEffect(Unit) {
@@ -491,7 +557,7 @@ fun MorphingText(
         ) {
 
             /*
-             * Ignore stale request.
+             * Ignore obsolete requests.
              */
             if (
                 destination ==
@@ -502,15 +568,21 @@ fun MorphingText(
 
 
             /*
-             * Freeze all configuration for this transition.
+             * Freeze spec/matcher for this transition.
              */
             val spec =
                 latestSpec
+
 
             val matcherForTransition =
                 latestMatcher
 
 
+            /*
+             * Build:
+             *
+             * committed -> destination
+             */
             val plan =
                 createTransitionPlan(
                     oldText =
@@ -522,6 +594,31 @@ fun MorphingText(
                 )
 
 
+            /* =================================================
+             * RESET VISUAL STATE
+             *
+             * Do this BEFORE publishing activeTransition.
+             *
+             * This prevents a frame where a new transition
+             * accidentally inherits previous alpha/progress.
+             * ================================================= */
+
+            exitAlpha.snapTo(
+                1f
+            )
+
+            moveProgress.snapTo(
+                0f
+            )
+
+            enterAlpha.snapTo(
+                0f
+            )
+
+
+            /*
+             * Renderer can now see the transition.
+             */
             activeTransition =
                 ActiveTransition(
                     plan =
@@ -531,57 +628,151 @@ fun MorphingText(
                 )
 
 
-            /*
-             * Start at EXACTLY zero elapsed milliseconds.
-             */
-            elapsedMillis.snapTo(
-                0f
-            )
-
-
-            /*
-             * Animate elapsed time continuously.
+            /* =================================================
+             * PHASE 1 — REMOVE
              *
-             * LinearEasing is deliberate:
+             * THIS IS THE FADE.
              *
-             * 500ms into a 1000ms phase = exactly 50%.
-             */
+             * There is NO delay.
+             *
+             * exitAlpha starts changing immediately:
+             *
+             * 1.00
+             * 0.99
+             * 0.98
+             * ...
+             * 0.00
+             *
+             * over exitDurationMillis.
+             * ================================================= */
+
             if (
-                spec.totalDurationMillis > 0
+                spec.exitDurationMillis ==
+                0
             ) {
 
-                elapsedMillis.animateTo(
-                    targetValue =
-                        spec
-                            .totalDurationMillis
-                            .toFloat(),
-
-                    animationSpec =
-                        tween(
-                            durationMillis =
-                                spec.totalDurationMillis,
-                            easing =
-                                LinearEasing,
-                        ),
+                exitAlpha.snapTo(
+                    0f
                 )
 
             } else {
 
-                elapsedMillis.snapTo(
-                    0f
+                exitAlpha.animateTo(
+                    targetValue =
+                        0f,
+
+                    animationSpec =
+                        tween(
+                            durationMillis =
+                                spec.exitDurationMillis,
+
+                            delayMillis =
+                                0,
+
+                            easing =
+                                LinearEasing,
+                        ),
                 )
             }
 
 
-            /*
-             * IMPORTANT:
+            /* =================================================
+             * PHASE 2 — MOVE
              *
-             * animateTo() suspends until the timeline completes.
+             * Starts only after REMOVE finishes.
+             * ================================================= */
+
+            if (
+                spec.moveDurationMillis ==
+                0
+            ) {
+
+                moveProgress.snapTo(
+                    1f
+                )
+
+            } else {
+
+                moveProgress.animateTo(
+                    targetValue =
+                        1f,
+
+                    animationSpec =
+                        tween(
+                            durationMillis =
+                                spec.moveDurationMillis,
+
+                            delayMillis =
+                                0,
+
+                            easing =
+                                LinearEasing,
+                        ),
+                )
+            }
+
+
+            /* =================================================
+             * PHASE 3 — INSERT
              *
-             * Only now does destination become committed.
-             */
+             * THIS IS THE FADE-IN.
+             *
+             * There is NO delay.
+             *
+             * enterAlpha starts changing immediately:
+             *
+             * 0.00
+             * 0.01
+             * 0.02
+             * ...
+             * 1.00
+             *
+             * over enterDurationMillis.
+             * ================================================= */
+
+            if (
+                spec.enterDurationMillis ==
+                0
+            ) {
+
+                enterAlpha.snapTo(
+                    1f
+                )
+
+            } else {
+
+                enterAlpha.animateTo(
+                    targetValue =
+                        1f,
+
+                    animationSpec =
+                        tween(
+                            durationMillis =
+                                spec.enterDurationMillis,
+
+                            delayMillis =
+                                0,
+
+                            easing =
+                                LinearEasing,
+                        ),
+                )
+            }
+
+
+            /* =================================================
+             * COMMIT
+             *
+             * Destination becomes the real text only after:
+             *
+             * REMOVE complete
+             * MOVE complete
+             * INSERT complete
+             * ================================================= */
+
             committedText =
                 destination
+
 
             activeTransition =
                 null
@@ -590,17 +781,19 @@ fun MorphingText(
 
 
     /* ========================================================
-     * VISUAL TEXT
+     * CURRENT VISUAL SOURCE / DESTINATION
      * ======================================================== */
 
     val transition =
         activeTransition
+
 
     val visualOldText =
         transition
             ?.plan
             ?.oldText
             ?: committedText
+
 
     val visualNewText =
         transition
@@ -610,22 +803,25 @@ fun MorphingText(
 
 
     /* ========================================================
-     * GRAPHEMES
+     * SEGMENT
      * ======================================================== */
 
     val oldGraphemes =
         remember(
             visualOldText
         ) {
+
             segmentGraphemes(
                 visualOldText
             )
         }
 
+
     val newGraphemes =
         remember(
             visualNewText
         ) {
+
             segmentGraphemes(
                 visualNewText
             )
@@ -642,6 +838,7 @@ fun MorphingText(
             style,
             textMeasurer,
         ) {
+
             measureWord(
                 text =
                     visualOldText,
@@ -654,12 +851,14 @@ fun MorphingText(
             )
         }
 
+
     val newWord =
         remember(
             visualNewText,
             style,
             textMeasurer,
         ) {
+
             measureWord(
                 text =
                     visualNewText,
@@ -674,7 +873,7 @@ fun MorphingText(
 
 
     /* ========================================================
-     * SIZE
+     * CANVAS SIZE
      * ======================================================== */
 
     val widthPx =
@@ -683,19 +882,23 @@ fun MorphingText(
             newWord.width,
         )
 
+
     val heightPx =
         max(
             oldWord.height,
             newWord.height,
         )
 
+
     val density =
         LocalDensity.current
+
 
     val widthDp =
         with(density) {
             widthPx.toDp()
         }
+
 
     val heightDp =
         with(density) {
@@ -704,28 +907,25 @@ fun MorphingText(
 
 
     /* ========================================================
-     * FRAME
+     * READ ACTUAL ANIMATED VALUES
      *
-     * Read elapsedMillis as Compose state.
+     * These reads cause Compose to update as Animatable changes.
      * ======================================================== */
 
-    val currentElapsedMillis =
-        elapsedMillis.value
+    val currentExitAlpha =
+        exitAlpha.value
 
-    val frame =
-        transition?.let {
 
-            calculateFrameProgress(
-                elapsedMillis =
-                    currentElapsedMillis,
-                spec =
-                    it.spec,
-            )
-        }
+    val currentMoveProgress =
+        moveProgress.value
+
+
+    val currentEnterAlpha =
+        enterAlpha.value
 
 
     /* ========================================================
-     * CANVAS
+     * RENDER
      * ======================================================== */
 
     Canvas(
@@ -740,9 +940,7 @@ fun MorphingText(
                 .semantics {
 
                     /*
-                     * Accessibility exposes committed text.
-                     *
-                     * Destination is exposed only after animation.
+                     * Do NOT expose destination early.
                      */
                     this.text =
                         AnnotatedString(
@@ -754,164 +952,60 @@ fun MorphingText(
         val currentTransition =
             transition
 
-        val currentFrame =
-            frame
 
         if (
-            currentTransition == null ||
-            currentFrame == null
+            currentTransition ==
+            null
         ) {
 
-            /*
-             * Stable state.
-             */
             drawStableWord(
                 word =
                     oldWord
             )
+
 
             return@Canvas
         }
 
 
         /*
-         * During transition this renderer exclusively owns text.
+         * IMPORTANT:
          *
-         * The complete destination word is NOT drawn separately.
+         * During animation, ONLY this function draws the text.
+         *
+         * Do not also draw:
+         *
+         * Text(text)
+         * Text(oldText)
+         * Text(newText)
+         *
+         * elsewhere over this Canvas.
          */
         drawTransition(
             plan =
                 currentTransition.plan,
+
             oldWord =
                 oldWord,
+
             newWord =
                 newWord,
-            frame =
-                currentFrame,
+
+            exitAlpha =
+                currentExitAlpha,
+
+            moveProgress =
+                currentMoveProgress,
+
+            enterAlpha =
+                currentEnterAlpha,
         )
     }
 }
 
 
 /* ============================================================
- * PURE TIMELINE CALCULATION
- * ============================================================ */
-
-@Immutable
-internal data class FrameProgress(
-    val exit: Float,
-    val move: Float,
-    val enter: Float,
-)
-
-
-/**
- * Pure deterministic function.
- *
- * Example:
- *
- * exit  = 1000ms
- * move  = 500ms
- * enter = 1000ms
- *
- * elapsed = 500ms
- *
- * exit  = .5
- * move  = 0
- * enter = 0
- */
-internal fun calculateFrameProgress(
-    elapsedMillis: Float,
-    spec: MorphingTextAnimationSpec,
-): FrameProgress {
-
-    val elapsed =
-        elapsedMillis.coerceIn(
-            minimumValue =
-                0f,
-            maximumValue =
-                spec
-                    .totalDurationMillis
-                    .toFloat(),
-        )
-
-    return FrameProgress(
-        exit =
-            calculateFraction(
-                elapsedMillis =
-                    elapsed,
-                startMillis =
-                    0,
-                durationMillis =
-                    spec.exitDurationMillis,
-            ),
-
-        move =
-            calculateFraction(
-                elapsedMillis =
-                    elapsed,
-                startMillis =
-                    spec.moveStartMillis,
-                durationMillis =
-                    spec.moveDurationMillis,
-            ),
-
-        enter =
-            calculateFraction(
-                elapsedMillis =
-                    elapsed,
-                startMillis =
-                    spec.enterStartMillis,
-                durationMillis =
-                    spec.enterDurationMillis,
-            ),
-    )
-}
-
-
-private fun calculateFraction(
-    elapsedMillis: Float,
-    startMillis: Int,
-    durationMillis: Int,
-): Float {
-
-    /*
-     * Zero-duration phase completes instantly once its start
-     * time has been reached.
-     */
-    if (
-        durationMillis == 0
-    ) {
-
-        return if (
-            elapsedMillis >=
-            startMillis.toFloat()
-        ) {
-            1f
-        } else {
-            0f
-        }
-    }
-
-
-    return (
-        (
-            elapsedMillis -
-                startMillis.toFloat()
-            ) /
-            durationMillis.toFloat()
-        )
-        .coerceIn(
-            minimumValue =
-                0f,
-            maximumValue =
-                1f,
-        )
-}
-
-
-/* ============================================================
- * GRAPHEME SEGMENTATION
+ * SEGMENT INTO GRAPHEMES
  * ============================================================ */
 
 internal fun segmentGraphemes(
@@ -933,6 +1027,7 @@ internal fun segmentGraphemes(
                 locale
             )
 
+
     iterator.setText(
         text
     )
@@ -944,6 +1039,7 @@ internal fun segmentGraphemes(
 
     var start =
         iterator.first()
+
 
     var end =
         iterator.next()
@@ -961,14 +1057,18 @@ internal fun segmentGraphemes(
                         start,
                         end,
                     ),
+
                 startOffset =
                     start,
+
                 endOffset =
                     end,
             )
 
+
         start =
             end
+
 
         end =
             iterator.next()
@@ -994,6 +1094,7 @@ internal fun createTransitionPlan(
         segmentGraphemes(
             oldText
         )
+
 
     val new =
         segmentGraphemes(
@@ -1027,6 +1128,7 @@ internal fun createTransitionPlan(
             it.oldIndex
         }
 
+
     val matchedNew =
         matches.mapTo(
             HashSet()
@@ -1056,16 +1158,22 @@ internal fun createTransitionPlan(
     return TransitionPlan(
         oldText =
             oldText,
+
         newText =
             newText,
+
         old =
             old,
+
         new =
             new,
+
         matches =
             matches,
+
         removedOldIndices =
             removed,
+
         insertedNewIndices =
             inserted,
     )
@@ -1073,7 +1181,7 @@ internal fun createTransitionPlan(
 
 
 /* ============================================================
- * VALIDATE MATCHES
+ * VALIDATE MATCHER OUTPUT
  * ============================================================ */
 
 private fun validateMatches(
@@ -1085,12 +1193,14 @@ private fun validateMatches(
     var previousOld =
         -1
 
+
     var previousNew =
         -1
 
 
     val seenOld =
         HashSet<Int>()
+
 
     val seenNew =
         HashSet<Int>()
@@ -1107,6 +1217,7 @@ private fun validateMatches(
             "Invalid oldIndex=${match.oldIndex}"
         }
 
+
         require(
             match.newIndex in
                 new.indices
@@ -1120,7 +1231,7 @@ private fun validateMatches(
                 match.oldIndex
             )
         ) {
-            "oldIndex=${match.oldIndex} matched multiple times"
+            "oldIndex=${match.oldIndex} was matched more than once"
         }
 
 
@@ -1129,7 +1240,7 @@ private fun validateMatches(
                 match.newIndex
             )
         ) {
-            "newIndex=${match.newIndex} matched multiple times"
+            "newIndex=${match.newIndex} was matched more than once"
         }
 
 
@@ -1149,7 +1260,7 @@ private fun validateMatches(
             match.oldIndex >
                 previousOld
         ) {
-            "Old match indices must be increasing"
+            "old match indices must be increasing"
         }
 
 
@@ -1157,12 +1268,13 @@ private fun validateMatches(
             match.newIndex >
                 previousNew
         ) {
-            "New match indices must be increasing"
+            "new match indices must be increasing"
         }
 
 
         previousOld =
             match.oldIndex
+
 
         previousNew =
             match.newIndex
@@ -1171,7 +1283,7 @@ private fun validateMatches(
 
 
 /* ============================================================
- * MEASUREMENT
+ * MEASUREMENT MODELS
  * ============================================================ */
 
 private data class MeasuredGrapheme(
@@ -1189,6 +1301,10 @@ private data class MeasuredWord(
 )
 
 
+/* ============================================================
+ * MEASURE WORD
+ * ============================================================ */
+
 private fun measureWord(
     text: String,
     graphemes: List<Grapheme>,
@@ -1197,7 +1313,11 @@ private fun measureWord(
 ): MeasuredWord {
 
     /*
-     * Empty text still needs line height.
+     * Empty text:
+     *
+     * width = 0
+     *
+     * but preserve sensible text height.
      */
     if (
         text.isEmpty()
@@ -1209,12 +1329,16 @@ private fun measureWord(
                     AnnotatedString(
                         "Mg"
                     ),
+
                 style =
                     style,
+
                 softWrap =
                     false,
+
                 maxLines =
                     1,
+
                 constraints =
                     Constraints(),
             )
@@ -1223,10 +1347,13 @@ private fun measureWord(
         return MeasuredWord(
             fullLayout =
                 null,
+
             graphemes =
                 emptyList(),
+
             width =
                 0f,
+
             height =
                 probe
                     .size
@@ -1237,7 +1364,13 @@ private fun measureWord(
 
 
     /*
-     * Complete word determines actual positions.
+     * Measure COMPLETE word first.
+     *
+     * We do NOT calculate:
+     *
+     * x = index * characterWidth
+     *
+     * because glyph widths differ.
      */
     val fullLayout =
         textMeasurer.measure(
@@ -1245,26 +1378,28 @@ private fun measureWord(
                 AnnotatedString(
                     text
                 ),
+
             style =
                 style,
+
             softWrap =
                 false,
+
             maxLines =
                 1,
+
             constraints =
                 Constraints(),
         )
 
 
-    val measured =
+    val measuredGraphemes =
         graphemes.map {
                 grapheme ->
 
+
             /*
-             * Position in complete text layout.
-             *
-             * Supported rendering contract is single-line
-             * LTR/simple-script text.
+             * Get position from actual Compose text layout.
              */
             val boundingBox =
                 fullLayout.getBoundingBox(
@@ -1273,20 +1408,25 @@ private fun measureWord(
 
 
             /*
-             * Isolated layout used for independent animation.
+             * We need an independently drawable layout for
+             * this grapheme because its alpha/X can animate.
              */
-            val isolated =
+            val isolatedLayout =
                 textMeasurer.measure(
                     text =
                         AnnotatedString(
                             grapheme.text
                         ),
+
                     style =
                         style,
+
                     softWrap =
                         false,
+
                     maxLines =
                         1,
+
                     constraints =
                         Constraints(),
                 )
@@ -1295,10 +1435,12 @@ private fun measureWord(
             MeasuredGrapheme(
                 grapheme =
                     grapheme,
+
                 x =
                     boundingBox.left,
+
                 layout =
-                    isolated,
+                    isolatedLayout,
             )
         }
 
@@ -1306,13 +1448,16 @@ private fun measureWord(
     return MeasuredWord(
         fullLayout =
             fullLayout,
+
         graphemes =
-            measured,
+            measuredGraphemes,
+
         width =
             fullLayout
                 .size
                 .width
                 .toFloat(),
+
         height =
             fullLayout
                 .size
@@ -1323,7 +1468,7 @@ private fun measureWord(
 
 
 /* ============================================================
- * DRAW STABLE
+ * DRAW STABLE WORD
  * ============================================================ */
 
 private fun DrawScope.drawStableWord(
@@ -1338,6 +1483,7 @@ private fun DrawScope.drawStableWord(
     drawText(
         textLayoutResult =
             layout,
+
         topLeft =
             Offset.Zero,
     )
@@ -1352,9 +1498,14 @@ private fun DrawScope.drawTransition(
     plan: TransitionPlan,
     oldWord: MeasuredWord,
     newWord: MeasuredWord,
-    frame: FrameProgress,
+    exitAlpha: Float,
+    moveProgress: Float,
+    enterAlpha: Float,
 ) {
 
+    /*
+     * old index -> destination match
+     */
     val matchByOldIndex =
         plan.matches
             .associateBy {
@@ -1362,6 +1513,10 @@ private fun DrawScope.drawTransition(
             }
 
 
+    /*
+     * Destination indices already represented by surviving
+     * old glyphs.
+     */
     val matchedNewIndices =
         plan.matches
             .mapTo(
@@ -1371,14 +1526,15 @@ private fun DrawScope.drawTransition(
             }
 
 
-    /* --------------------------------------------------------
-     * OLD OBJECTS
-     * -------------------------------------------------------- */
+    /* ========================================================
+     * DRAW OLD GLYPH OBJECTS
+     * ======================================================== */
 
     oldWord.graphemes
         .forEachIndexed {
                 oldIndex,
                 oldGrapheme ->
+
 
             val match =
                 matchByOldIndex[
@@ -1387,61 +1543,73 @@ private fun DrawScope.drawTransition(
 
 
             if (
-                match == null
+                match ==
+                null
             ) {
 
-                /*
-                 * REMOVE
+                /* =============================================
+                 * REMOVED GLYPH
                  *
-                 * Position remains fixed.
+                 * Position NEVER changes.
                  *
-                 * frame.exit:
+                 * Its actual alpha is exitAlpha.
                  *
-                 * 0 -> alpha 1
-                 * .5 -> alpha .5
-                 * 1 -> alpha 0
-                 */
+                 * exitAlpha:
+                 *
+                 * 1 -> 0
+                 * ============================================= */
+
                 drawGrapheme(
                     grapheme =
                         oldGrapheme,
+
                     x =
                         oldGrapheme.x,
+
                     alpha =
-                        1f -
-                            frame.exit,
+                        exitAlpha,
                 )
 
             } else {
 
-                /*
+                /* =============================================
                  * SURVIVOR
                  *
-                 * The OLD object remains the rendered object.
+                 * This is the SAME rendered object.
                  *
-                 * We never draw its matched NEW object.
-                 */
+                 * Alpha always = 1.
+                 *
+                 * Position:
+                 *
+                 * old X -> new X
+                 * ============================================= */
+
                 val destination =
                     newWord.graphemes[
                         match.newIndex
                     ]
 
 
-                val x =
+                val animatedX =
                     lerp(
                         start =
                             oldGrapheme.x,
+
                         end =
                             destination.x,
+
                         fraction =
-                            frame.move,
+                            moveProgress,
                     )
 
 
                 drawGrapheme(
                     grapheme =
                         oldGrapheme,
+
                     x =
-                        x,
+                        animatedX,
+
                     alpha =
                         1f,
                 )
@@ -1449,19 +1617,26 @@ private fun DrawScope.drawTransition(
         }
 
 
-    /* --------------------------------------------------------
-     * NEW-ONLY OBJECTS
-     * -------------------------------------------------------- */
+    /* ========================================================
+     * DRAW NEW-ONLY GLYPHS
+     * ======================================================== */
 
     newWord.graphemes
         .forEachIndexed {
                 newIndex,
                 newGrapheme ->
 
+
             /*
-             * Critical:
+             * Matched destination glyphs MUST NOT be drawn.
              *
-             * Do NOT draw destination copy of a survivor.
+             * Otherwise you get:
+             *
+             * old survivor
+             * +
+             * destination copy
+             *
+             * at the same time.
              */
             if (
                 newIndex in
@@ -1471,31 +1646,34 @@ private fun DrawScope.drawTransition(
             }
 
 
-            /*
-             * INSERT
+            /* =============================================
+             * INSERTED GLYPH
              *
-             * Always stays at final X.
+             * Position is already final.
              *
-             * frame.enter:
+             * Its actual alpha is enterAlpha.
              *
-             * 0 -> alpha 0
-             * .5 -> alpha .5
-             * 1 -> alpha 1
-             */
+             * enterAlpha:
+             *
+             * 0 -> 1
+             * ============================================= */
+
             drawGrapheme(
                 grapheme =
                     newGrapheme,
+
                 x =
                     newGrapheme.x,
+
                 alpha =
-                    frame.enter,
+                    enterAlpha,
             )
         }
 }
 
 
 /* ============================================================
- * DRAW GRAPHEME
+ * DRAW ONE GRAPHEME
  * ============================================================ */
 
 private fun DrawScope.drawGrapheme(
@@ -1508,13 +1686,19 @@ private fun DrawScope.drawGrapheme(
         alpha.coerceIn(
             minimumValue =
                 0f,
+
             maximumValue =
                 1f,
         )
 
 
+    /*
+     * Completely invisible:
+     * don't issue draw call.
+     */
     if (
-        safeAlpha <= 0f
+        safeAlpha <=
+        0f
     ) {
         return
     }
@@ -1523,13 +1707,16 @@ private fun DrawScope.drawGrapheme(
     drawText(
         textLayoutResult =
             grapheme.layout,
+
         topLeft =
             Offset(
                 x =
                     x,
+
                 y =
                     0f,
             ),
+
         alpha =
             safeAlpha,
     )
@@ -1546,10 +1733,11 @@ private fun lerp(
     fraction: Float,
 ): Float {
 
-    val p =
+    val progress =
         fraction.coerceIn(
             minimumValue =
                 0f,
+
             maximumValue =
                 1f,
         )
@@ -1559,5 +1747,6 @@ private fun lerp(
         (
             end -
                 start
-        ) * p
+        ) *
+        progress
 }
