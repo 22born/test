@@ -1,3 +1,40 @@
+During a transition, intermediate visual states must not be exposed as partial text to accessibility services. The component must continue to expose the last fully displayed text until the transition completes. Once the transition completes, it must expose the new text.
+
+
+
+
+Instead specify observable behavior:
+Animation timing: The animation must be driven by Compose animation/frame time so that it can be deterministically controlled using the Compose test clock.
+And separately:
+Observable stages: The state after REMOVE and before MOVE must be rendered for at least one frame. Likewise, the state after MOVE completes and before INSERT must be rendered for at least one frame
+
+
+
+
+Surviving characters must preserve their relative order; they must not cross or leapfrog one another. Subject to that constraint, preserve the maximum possible number of existing characters. When multiple valid matchings preserve the same number of characters, choose the one with the smallest total index-shuffle distance, where the distance of a match is |oldIndex - newIndex|. Remaining ties must be resolved deterministically.
+
+
+
+I’d define them like this:
+[Robolectric Test] Survivors preserve relative order — ab → ba
+Verify that surviving characters cannot cross or leapfrog one another. The implementation must not preserve both characters by matching a: 0 → 1 and b: 1 → 0. Any selected survivors must maintain their relative ordering between the source and destination.
+[Robolectric Test] Maximum survivor count takes priority over index-shuffle distance
+Use an input where one possible matching has a smaller index-shuffle cost but preserves fewer characters. Verify that the implementation first maximizes the number of surviving characters, and only then minimizes the total |oldIndex - newIndex| among those maximum-survivor matchings.
+This gives you a clear matching priority:
+1. Preserve relative order (no crossing)
+2. Maximize number of survivors
+3. Minimize total index-shuffle distance
+4. Resolve remaining ties deterministically
+
+
+
+
+
+
+
+
+
+
 [Roborazzi Screenshot Test] Destination-only characters are absent during REMOVE
 For chair → care, capture the REMOVE frame. The screenshot must contain the surviving c, a, and r at their original positions. The destination-only e must be completely absent. The full destination word care must not already be rendered in the background.
 [Roborazzi Screenshot Test] Destination-only characters are absent during MOVE
