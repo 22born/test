@@ -1,3 +1,133 @@
+Roborazzi screenshot tests
+[Roborazzi Screenshot Test] Initial rendering
+Render chair before any update. The screenshot should assess that the initial text is rendered normally, with correct spacing, typography, dimensions, and no animation artifacts.
+[Roborazzi Screenshot Test] chair → care — REMOVE state
+Capture the first renderable state after removal but before movement. The screenshot should show h and i completely absent while c, a, and r remain at exactly their original X positions. e must not be visible. This proves removal occurs before movement.
+[Roborazzi Screenshot Test] chair → care — MOVE midpoint
+Capture approximately 50% through movement. The screenshot should assess that c remains stationary while a and r are between their old and destination positions. h, i, and e must all remain absent. No matched glyph should appear twice.
+[Roborazzi Screenshot Test] chair → care — POST-MOVE state
+Capture the renderable state immediately after movement finishes but before insertion. The screenshot should show c, a, and r at their final care coordinates, while e remains absent. This proves insertion does not happen until movement has completed.
+[Roborazzi Screenshot Test] chair → care — final state
+Capture after the transition completes. The screenshot should match normal rendering of care. There should be no old glyphs, duplicate glyphs, gaps, or intermediate positioning.
+[Roborazzi Screenshot Test] care → hair — REMOVE state
+Capture immediately after removal. c and e must be absent, while a and r remain at their original care positions. h and i must not yet exist.
+[Roborazzi Screenshot Test] care → hair — MOVE midpoint
+Capture halfway through movement. a should remain stationary because its position does not change significantly according to layout, while r should visibly move toward its new position on the right. h and i must still be absent. This catches implementations that simply compact all survivors toward the left.
+[Roborazzi Screenshot Test] care → hair — POST-MOVE state
+Capture after movement but before insertion. a and r must occupy their destination positions from hair, but h and i must still be absent.
+[Roborazzi Screenshot Test] care → hair — final state
+Capture the completed transition. It should visually match normal rendering of hair.
+[Roborazzi Screenshot Test] Insertion-only transition — car → care
+Capture the pre-insert state and final state. Before insertion, c, a, and r should already be correctly positioned and e should be completely absent. The final screenshot should show care. Existing glyphs should not unnecessarily disappear and reappear.
+[Roborazzi Screenshot Test] Removal-only transition — care → car
+Capture before and after removal. The screenshot should assess that e disappears cleanly while the surviving glyphs remain visually stable. There should be no unnecessary disappearance/reappearance of c, a, or r.
+[Roborazzi Screenshot Test] Complete replacement — abc → XYZ
+Capture the REMOVE state and final state. Since there are no survivors, the intermediate state should contain no text. XYZ must not appear prematurely. The final screenshot should contain only the destination.
+[Roborazzi Screenshot Test] Empty → non-empty — "" → care
+Capture the state before insertion and the final state. The intermediate state should be visually empty without malformed sizing or artifacts. Final rendering should display care correctly.
+[Roborazzi Screenshot Test] Non-empty → empty — care → ""
+Capture before and after removal. All glyphs should disappear cleanly, with no residual pixels or clipping artifacts.
+[Roborazzi Screenshot Test] Proportional-font positioning
+Use a transition containing visibly different glyph widths, such as one involving W and i. The screenshots should assess that glyph positions are based on actual text layout rather than a fixed characterWidth × index calculation.
+[Roborazzi Screenshot Test] Duplicate-character transition
+Use a duplicate-heavy case such as aabaa → ababa. Capture REMOVE, MOVE midpoint, POST-MOVE, and final states. The screenshots should assess stable glyph identity, deterministic survivor selection, correct movement, and absence of duplicate rendering.
+[Roborazzi Screenshot Test] Spaces and punctuation
+Use representative cases such as a-b → ab and a string containing spaces. Assess that spaces/punctuation affect positioning correctly and that removing them does not cause survivors to jump before MOVE.
+[Roborazzi Screenshot Test] Short → long text
+Use something like car → cardboard. The screenshot should primarily assess component bounds and clipping. Newly inserted content must fit completely when the destination appears.
+[Roborazzi Screenshot Test] Long → short text
+Use something like cardboard → car. Assess that the old text and intermediate survivors are not incorrectly clipped and that the final component renders the shorter destination correctly.
+[Roborazzi Screenshot Test] Unicode grapheme rendering
+If Unicode correctness is part of the assignment, include one representative combining-character or multi-code-point emoji transition. The screenshot should assess that a user-perceived character does not visually split into independently animated fragments.
+[Roborazzi Screenshot Test] Non-default typography
+Run a representative transition using a different font size/weight. Assess that positions and bounds are remeasured correctly rather than being based on coordinates cached for the default typography.
+[Roborazzi Screenshot Test] Deterministic rendering across repeated runs
+Run the same duplicate-heavy transition multiple times and capture the same intermediate point. Every result should match the same golden. This catches nondeterministic survivor selection.
+Robolectric tests
+[Robolectric Test] Initial text semantics
+Render MorphingText("chair") and verify the node exposes chair through accessibility semantics immediately.
+[Robolectric Test] Identical value update
+Update care → care. Verify the component remains care, does not get stuck in an animation, and does not introduce unnecessary state changes.
+[Robolectric Test] Destination is not committed immediately
+Start chair → care, freeze the Compose test clock, and advance to the REMOVE state. Semantics must still expose chair, not care.
+[Robolectric Test] Semantics remain old during MOVE
+Advance into the movement phase. Accessibility semantics must continue exposing chair.
+[Robolectric Test] Semantics remain old at POST-MOVE boundary
+Advance until movement has completed but before insertion/commit. Semantics must still expose chair.
+[Robolectric Test] Destination commits after complete transition
+Finish chair → care. Semantics must now expose care.
+[Robolectric Test] Empty initial string
+Render "". Verify no crash and that semantics correctly represent the empty committed value.
+[Robolectric Test] Empty → text
+Transition "" → care. Verify the component eventually commits care without crashing.
+[Robolectric Test] Text → empty
+Transition care → "". Verify it eventually commits the empty value without crashing.
+[Robolectric Test] Empty → empty
+Verify the no-op empty case does not start invalid animation/measurement behavior or crash.
+[Robolectric Test] Single-character replacement
+Transition a → b. Verify a remains the committed semantic value during the transition and b becomes committed only when the transition finishes.
+[Robolectric Test] Case-sensitive replacement
+Transition care → Care. Verify it completes correctly rather than treating the strings as identical.
+[Robolectric Test] Duplicate characters complete successfully
+Exercise cases such as aaaa → aa, aa → aaaa, letter → better, letter → teller, and aabaa → ababa. Verify every transition reaches the expected destination and never gets stuck.
+[Robolectric Test] Rapid updates keep latest pending destination
+Start chair → care. While it is running, request card, then hard, then hair. Verify chair → care finishes and the next completed destination is hair. Intermediate pending values do not need to be rendered as complete transitions.
+[Robolectric Test] Current transition is not interrupted
+Start A → B, then request C while movement is active. Verify B still becomes committed before the component begins transitioning toward C.
+[Robolectric Test] Pending target is replaced by newer target
+Start A → B, request C, then request D before B finishes. Verify the committed sequence is effectively A → B → D; C must not become a committed value.
+[Robolectric Test] Target returns to original source
+Start A → B, then request A before the first transition finishes. Verify B first becomes committed and the component subsequently transitions back to A. This catches implementations that incorrectly discard the second A because it equals the committed source at request time.
+[Robolectric Test] Repeated active destination does not cause redundant transition
+Start A → B, then request B again. Once B is committed, the component should remain stable rather than performing a redundant B → B transition.
+[Robolectric Test] Multiple identical pending updates
+Start A → B, then request C several times. Verify the eventual destination is C and the component does not repeatedly transition to the same value.
+[Robolectric Test] Update near transition completion
+Request a new destination around the point where the current animation completes. Verify the request isn't lost and the component eventually reaches the newest value.
+[Robolectric Test] Long rapid-update sequence
+Submit many updates while animations are active. After enough virtual time, verify the component always converges to the latest requested text and does not deadlock.
+[Robolectric Test] Removal state lasts for a renderable frame
+Freeze the clock, initiate a transition, and advance frame-by-frame. Verify there is an intermediate frame between the old stable state and movement. The exact visual contents belong in Roborazzi; this test establishes the phase is observable.
+[Robolectric Test] Post-MOVE state lasts for a renderable frame
+Advance through movement frame-by-frame and verify there is an observable state after movement completes but before the destination commits.
+[Robolectric Test] Transition eventually completes with manual clock
+With mainClock.autoAdvance = false, advance sufficient virtual time and frames. Verify the animation doesn't depend on real wall-clock time and eventually commits the destination.
+[Robolectric Test] Unrelated recomposition does not restart transition
+Cause another state read by the surrounding composition to change while the morph is running. Verify animation progress isn't reset and the transition still completes normally.
+[Robolectric Test] Style change while stable
+Change the supplied TextStyle while text remains unchanged. Verify the component recomposes correctly without changing its committed text.
+[Robolectric Test] Style change during animation
+Change TextStyle while a transition is active. Verify the component does not crash, deadlock, or lose the requested destination.
+[Robolectric Test] Component disposed during transition
+Start an animation and remove MorphingText from composition. Verify disposal/coroutine cancellation completes without exceptions.
+[Robolectric Test] Component re-added after disposal
+Remove an animating instance, then add a new instance. Verify it initializes from its supplied current text rather than inheriting stale state from the disposed component.
+[Robolectric Test] Multiple independent instances
+Render two or more MorphingText instances and update them independently. Verify their committed values and transitions do not interfere with one another.
+[Robolectric Test] Unicode supplementary character does not crash
+Exercise text containing a supplementary Unicode character/emoji and verify the transition completes without malformed indexing exceptions.
+[Robolectric Test] Combining-character input does not crash
+Exercise a base character plus combining mark. Verify the transition reaches its destination correctly. Detailed visual grapheme integrity can remain a Roborazzi assertion.
+[Robolectric Test] Very long input
+Transition between reasonably long strings. Verify the implementation completes without pathological failure, stack issues, or getting stuck. Keep the length realistic because a reference DP matcher may have nontrivial complexity.
+[Robolectric Test] Accessibility skips discarded pending destinations
+During A → B, request C and then D. Verify accessibility exposes A, then B, then eventually D; discarded C must never become the committed semantic value.
+[Robolectric Test] Final state remains stable after extra time
+Complete chair → care, then advance the virtual clock significantly further. Verify semantics remain care and no stale transition restarts.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 package com.example.morphingtext
 
 import androidx.compose.material3.LocalTextStyle
