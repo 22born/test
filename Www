@@ -1,3 +1,6 @@
+Repeated characters: When multiple occurrences of the same character can be matched, preserve the maximum number of existing characters while minimizing the total index-shuffle distance between the old and new text. The index-shuffle distance for a matched character is |oldIndex - newIndex|. If multiple matchings have the same total distance, the result must be deterministic.
+
+
 Roborazzi screenshot tests
 [Roborazzi Screenshot Test] Initial rendering
 Render chair before any update. The screenshot should assess that the initial text is rendered normally, with correct spacing, typography, dimensions, and no animation artifacts.
