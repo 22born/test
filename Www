@@ -1,3 +1,15 @@
+[Roborazzi Screenshot Test] Destination-only characters are absent during REMOVE
+For chair → care, capture the REMOVE frame. The screenshot must contain the surviving c, a, and r at their original positions. The destination-only e must be completely absent. The full destination word care must not already be rendered in the background.
+[Roborazzi Screenshot Test] Destination-only characters are absent during MOVE
+Capture chair → care at approximately 50% movement. The screenshot must contain only the surviving c, a, and r. e must still be absent. This catches implementations that render the complete destination text and animate old characters over it.
+[Roborazzi Screenshot Test] Destination text is not rendered underneath survivors
+During the MOVE midpoint, verify that each matched character has only one visible instance. For example, a and r should exist only at their current animated positions; there must not also be stationary copies at their final destination positions.
+[Roborazzi Screenshot Test] No overlapping old and new copies of a survivor
+Use care → hair, particularly the moving r. At the midpoint, there should be exactly one visible r, located between its source and destination positions. There must not be an old r, moving r, and/or destination r simultaneously.
+[Roborazzi Screenshot Test] Full destination appears only after INSERT
+Compare POST-MOVE and FINAL for chair → care. POST-MOVE should visually contain only the positioned survivors c a r; FINAL should introduce e and produce care. The complete destination must not be visible before this boundary.
+
+
 Repeated characters: When multiple occurrences of the same character can be matched, preserve the maximum number of existing characters while minimizing the total index-shuffle distance between the old and new text. The index-shuffle distance for a matched character is |oldIndex - newIndex|. If multiple matchings have the same total distance, the result must be deterministic.
 
 
