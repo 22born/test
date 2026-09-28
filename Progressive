@@ -1,3 +1,36 @@
+9. Energy is drawn using this exact ARGB color formula after clamping energy to [0f, 1f]:
+
+alpha = 255
+red   = roundToInt(255f * energy)
+green = roundToInt(152f * energy)
+blue  = 0
+
+Therefore energy 0f is #FF000000 and energy 1f is #FFFF9800. Band 0 is drawn at the bottom; bandCount - 1 is drawn at the top.
+
+
+3. The component treats appended samples as one continuous stream. The first sample after construction or clear() is sample index 0, the next is sample index 1, and so on. appendSamples(samples) appends all provided samples as one atomic operation and copies the input array before returning. Each input value is sanitized before storage: NaN, positive infinity, and negative infinity become 0f; finite values below -1f become -1f; finite values above 1f become 1f; all other finite values are stored unchanged.
+
+
+
+Also tighten Test 2 to cover both:
+
+
+2. Sample copy, sanitization, partial windows, duplicate scheduling, and color formula
+With windowSize = 4 and hopSize = 2, append 3 samples and verify no column is pending or committed. Append enough for 10 samples using values below -1f, above 1f, NaN, positive infinity, and negative infinity; mutate the source array after append. Compose repeatedly at a viewport covering [0, 8). Verify only columns 0, 1, 2, and 3 are scheduled once, rendered energies reflect copied sanitized values, and intermediate energy colors follow the exact ARGB formula.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 2. The component treats appended samples as one continuous stream. The first sample after construction or clear() is sample 0, the next is sample 1, and so on. These sample numbers are used for column analysis and viewport positioning.
 
 
