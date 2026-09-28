@@ -1,25 +1,31 @@
-Android Progressive Concurrent Spectrogram View
+Compose Progressive Concurrent Spectrogram
 Context
-A custom Android View renders a live spectrogram timeline. Audio samples may be appended from any thread. The view analyzes complete sample windows on background threads, commits finished spectrogram columns on the main thread, and draws committed columns as a heatmap.
+A Jetpack Compose component renders a live spectrogram timeline. Audio samples may be appended from any thread. The state object analyzes complete sample windows on background threads, commits finished spectrogram columns on the main thread, and the composable draws committed columns as a heatmap.
 The hard part is concurrency correctness: analysis jobs may finish out of order, configuration may change while jobs are running, stale results must be rejected, zoomed-out rendering must preserve peaks, cache eviction must not corrupt visible output, and drawing/snapshotting must never deadlock.
 Task
-Implement ProgressiveSpectrogramView.
+Implement ProgressiveSpectrogram and ProgressiveSpectrogramState.
+
 Starter Code
-import android.content.Context
 import android.graphics.Bitmap
-import android.util.AttributeSet
-import android.view.View
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.ui.Modifier
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
-class ProgressiveSpectrogramView @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0,
+@Composable
+fun ProgressiveSpectrogram(
+    state: ProgressiveSpectrogramState,
+    modifier: Modifier = Modifier
+) {
+    TODO("Implement")
+}
+
+@Stable
+class ProgressiveSpectrogramState(
     private val analysisExecutor: Executor = Executors.newFixedThreadPool(2),
     private val maxCachedColumns: Int = 4096
-) : View(context, attrs, defStyleAttr) {
-
+) {
     fun appendSamples(samples: FloatArray) {
         TODO("Implement")
     }
@@ -56,9 +62,13 @@ data class SpectrogramDebugState(
     val mainThreadId: Long,
     val commitThreadIds: List<Long>
 )
+
+
+
+
 Requirements
-Use Android custom View, Canvas, Bitmap, Kotlin standard library, and JDK concurrency primitives only. Do not use Compose, TextureView, SurfaceView, RenderThread, coroutines, RxJava, or third-party rendering libraries.
-The constructor must throw IllegalArgumentException if maxCachedColumns <= 0. Public methods may be called from any thread. Column commits and drawing must happen on the main thread, and View invalidation must be requested on the main thread.
+Use Jetpack Compose Canvas, Android Bitmap/Canvas for snapshots, Kotlin standard library, and JDK concurrency primitives only. Do not use Android View, TextView, TextureView, SurfaceView, RenderThread, coroutines, RxJava, or third-party rendering libraries.
+The state constructor must throw IllegalArgumentException if maxCachedColumns <= 0. Public methods may be called from any thread. Column commits and Compose-observed state mutations must happen on the main thread. Worker threads must not mutate Compose snapshot state directly.
 Samples have absolute indices starting at 0 after construction or clear(). appendSamples appends all provided samples as one complete operation, copies the input array before returning, clamps values to [-1f, 1f], and treats NaN or infinite values as 0f.
 setAnalysisConfig(windowSize, hopSize, bandCount) requires windowSize > 0, hopSize > 0, hopSize <= windowSize, bandCount > 0, and bandCount <= windowSize; otherwise throw IllegalArgumentException. Changing the config invalidates all pending and committed columns.
 Column k analyzes samples [k * hopSize, k * hopSize + windowSize). For rendering, column k represents [k * hopSize, (k + 1) * hopSize). A column may be scheduled only after its full analysis window exists.
@@ -66,53 +76,68 @@ Band energy is deterministic: split the analysis window into bandCount contiguou
 setViewport(firstSampleIndex, samplesPerPixel) requires finite samplesPerPixel > 0; otherwise throw IllegalArgumentException. Pixel x represents [firstSampleIndex + x * samplesPerPixel, firstSampleIndex + (x + 1) * samplesPerPixel).
 If a pixel intersects multiple committed columns, each band renders the maximum energy across those columns. Missing, pending, evicted, stale, or future ranges draw only the black background.
 Energy is drawn as orange intensity: 0f is black and 1f is #FFFF9800. Band 0 is drawn at the bottom; bandCount - 1 is drawn at the top.
-onDraw must never block waiting for analysis. It may schedule missing visible columns, but repeated draws must not schedule duplicate jobs for the same column and generation.
+ProgressiveSpectrogram must not block waiting for analysis. It may schedule missing visible columns when its size or state revision changes, but repeated recompositions/draws must not schedule duplicate jobs for the same column and generation.
 Analysis jobs must use immutable snapshots of sample data, config, and generation. A result may commit only if its generation, config, and column key are still current and pending.
 clear() removes samples, pending columns, committed columns, and resets the next sample index to 0. Old worker completions must not repopulate the cache.
-Committed columns are stored in an LRU cache capped by maxCachedColumns. Evict least-recently-used non-visible columns first. Columns visible in the current draw must not be evicted during that draw, even if the cache temporarily exceeds the limit.
-renderSnapshot(width, height) requires positive dimensions, renders into a new Bitmap from one immutable snapshot of committed columns and viewport values, does not call View.draw, does not wait for workers or the main thread, and does not mutate view state.
-debugState() returns a stable snapshot without mutating state, scheduling jobs, waiting for workers, or exposing mutable collections. commitThreadIds records the thread id used for each committed column since construction or the latest clear(); every value must equal mainThreadId.
-The implementation must not deadlock under concurrent appendSamples, setViewport, setAnalysisConfig, clear, onDraw, renderSnapshot, and worker completions, and output must be deterministic enough for Robolectric bitmap tests and Roborazzi screenshots.
+Committed columns are stored in an LRU cache capped by maxCachedColumns, except when all excess columns are visible in the current draw. Evict least-recently-used non-visible columns first. Columns visible in the current draw must not be evicted during that draw.
+renderSnapshot(width, height) requires positive dimensions, renders into a new Bitmap from one immutable snapshot of committed columns and viewport values, does not call a composable, does not wait for workers or the main thread, and does not mutate state.
+debugState() returns a stable snapshot without mutating state, scheduling jobs, waiting for workers, or exposing mutable internal collections. commitThreadIds records the thread id used for each committed column since construction or the latest clear(); every value must equal mainThreadId.
+The implementation must not deadlock under concurrent appendSamples, setViewport, setAnalysisConfig, clear, composition/drawing, renderSnapshot, and worker completions. Output must be deterministic enough for Compose UI bitmap tests and Roborazzi screenshots.
 Tests
 Invalid inputs
 Verify invalid maxCachedColumns, invalid analysis config including bandCount > windowSize, invalid samplesPerPixel, and invalid snapshot sizes throw IllegalArgumentException.
-Partial and complete windows
-With windowSize = 4 and hopSize = 2, append 3 samples and verify no column. Append enough for 10 samples and verify only columns 0, 1, 2, and 3 are scheduled once each.
+Sample copy, sanitization, partial windows, and duplicate scheduling
+With windowSize = 4 and hopSize = 2, append 3 samples and verify no column is pending or committed. Append enough for 10 samples using values outside [-1, 1], NaN, and infinity; mutate the source array after append. Compose repeatedly at a viewport covering [0, 8). Verify only columns 0, 1, 2, and 3 are scheduled once, and rendered energies reflect copied sanitized values.
 Out-of-order completion
-Schedule columns 0, 1, 2 and complete them in order 2, 0, 1. Verify rendering is ordered by column index.
+Use a controlled executor. Schedule columns 0, 1, and 2, then complete jobs in order 2, 0, 1. Verify final rendering is ordered by column index, not completion order.
 Clear rejects old workers
-Start jobs, call clear(), complete old jobs, and verify no old columns commit and next appended samples start from index 0.
+Start jobs, call clear(), complete old jobs, and verify no old columns commit. Append new samples after clear() and verify the timeline starts again at column 0.
 Config change rejects stale columns
-Start jobs with one config, change config, complete old jobs, and verify old results do not commit.
-Zoomed-out peak preservation
-Place one high-energy column inside a pixel bucket with low-energy neighbors. Verify max aggregation keeps the spike visible.
-Missing/future ranges draw background
-Use a viewport spanning before sample 0 and beyond newest samples. Verify missing regions stay black.
+Start jobs with one config, call setAnalysisConfig with a different bandCount, complete old jobs, and verify old results do not commit.
+Zoomed-out peak preservation and band orientation
+Place one high-energy column inside a pixel bucket with low-energy neighbors. Use a high samplesPerPixel so the bucket intersects multiple columns. Verify max aggregation keeps the spike visible. Verify band 0 appears at the bottom and the highest band appears at the top.
+Missing and future ranges draw background
+Use a viewport spanning before sample 0 and beyond the newest samples. Verify missing regions remain black.
 Main-thread commit
-Complete jobs from worker threads, run main-thread tasks, and verify every commitThreadIds entry equals mainThreadId.
+Complete jobs from worker threads, run pending main-thread tasks, call debugState(), and verify every commitThreadIds entry equals mainThreadId.
 LRU eviction
-Use a small cache, render columns, pan so some become non-visible, render more columns, and verify least-recently-used non-visible columns are evicted before visible ones.
+Use a small cache. Render several columns, pan so some become non-visible, render more columns, and verify least-recently-used non-visible columns are evicted before visible columns.
 Visible protection
-Set maxCachedColumns smaller than visible column count. Verify visible columns survive the current draw even if cache temporarily exceeds the limit.
-renderSnapshot safety
-Call renderSnapshot from the main thread under timeout while jobs are pending. Verify it returns without waiting and does not mutate debugState.
+Set maxCachedColumns smaller than the visible column count. Verify visible columns survive the current draw even if the cache temporarily exceeds the limit.
+Snapshot safety
+Call renderSnapshot from the main thread under a timeout while jobs are pending. Verify it returns without waiting and does not mutate debugState().
 Snapshot consistency during viewport race
-Run renderSnapshot while another thread changes viewport. Verify the result corresponds to either the old or new viewport, never mixed values.
+Run renderSnapshot while another thread changes viewport. Verify the result corresponds to either the old viewport or the new viewport, never mixed viewport values.
 Stress race
-Randomly interleave append, viewport changes, config changes, clear, draw, snapshot, and out-of-order job completions. Verify no crashes, no deadlocks, no stale commits, and cache rules hold.
+Randomly interleave appendSamples, viewport changes, config changes, clear, composition/drawing, renderSnapshot, and out-of-order job completions. Verify no crashes, no deadlocks, no stale commits, and cache rules hold.
 Roborazzi visual regression
-Capture: before jobs complete, after partial commit, after all visible columns commit, and a zoomed-out spike case. Verify progressive fill, no stale artifacts, and spike preservation.
+Capture before jobs complete, after partial commit, after all visible columns commit, and a zoomed-out spike case. Verify progressive fill, no stale artifacts, stable orange intensity, and spike preservation.
 
-Reference Solution
-import android.content.Context
+
+
+
+solution
+
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Color as AndroidColor
 import android.graphics.Paint
 import android.os.Handler
 import android.os.Looper
-import android.util.AttributeSet
-import android.view.View
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import java.util.LinkedHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -123,17 +148,47 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-class ProgressiveSpectrogramView @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0,
+@Composable
+fun ProgressiveSpectrogram(
+    state: ProgressiveSpectrogramState,
+    modifier: Modifier = Modifier
+) {
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    val version = state.versionForCompose
+
+    LaunchedEffect(state, canvasSize, version) {
+        if (canvasSize.width > 0 && canvasSize.height > 0) {
+            state.scheduleVisible(canvasSize.width, canvasSize.height)
+        }
+    }
+
+    Canvas(
+        modifier = modifier.onSizeChanged { canvasSize = it }
+    ) {
+        val width = size.width.roundToInt()
+        val height = size.height.roundToInt()
+
+        if (width > 0 && height > 0) {
+            drawIntoCanvas { canvas ->
+                state.drawCommittedTo(canvas.nativeCanvas, width, height)
+            }
+        }
+    }
+}
+
+@Stable
+class ProgressiveSpectrogramState(
     private val analysisExecutor: Executor = Executors.newFixedThreadPool(2),
     private val maxCachedColumns: Int = 4096
-) : View(context, attrs, defStyleAttr) {
-
+) {
     private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainThreadId = Looper.getMainLooper().thread.id
+
+    private var renderVersion by mutableIntStateOf(0)
+
+    internal val versionForCompose: Int
+        get() = renderVersion
 
     private var generation: Long = 0L
 
@@ -156,15 +211,10 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
 
     private val commitThreadIds = ArrayList<Long>()
 
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-
     init {
         require(maxCachedColumns > 0) {
             "maxCachedColumns must be positive"
         }
-        setWillNotDraw(false)
     }
 
     fun appendSamples(samples: FloatArray) {
@@ -181,7 +231,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             nextSampleIndex += copied.size.toLong()
         }
 
-        safeInvalidate()
+        requestRedraw()
     }
 
     fun setViewport(firstSampleIndex: Long, samplesPerPixel: Float) {
@@ -194,7 +244,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             this.samplesPerPixel = samplesPerPixel
         }
 
-        safeInvalidate()
+        requestRedraw()
     }
 
     fun setAnalysisConfig(windowSize: Int, hopSize: Int, bandCount: Int) {
@@ -216,7 +266,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             currentVisibleKeys = emptySet()
         }
 
-        safeInvalidate()
+        requestRedraw()
     }
 
     fun clear() {
@@ -231,7 +281,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             commitThreadIds.clear()
         }
 
-        safeInvalidate()
+        requestRedraw()
     }
 
     fun renderSnapshot(width: Int, height: Int): Bitmap {
@@ -243,7 +293,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         }
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
+        val canvas = AndroidCanvas(bitmap)
         renderSnapshotToCanvas(canvas, snapshot)
         return bitmap
     }
@@ -260,21 +310,14 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         }
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+    internal fun scheduleVisible(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
 
-        val contentWidth = width - paddingLeft - paddingRight
-        val contentHeight = height - paddingTop - paddingBottom
-
-        if (contentWidth <= 0 || contentHeight <= 0) {
-            return
+        val jobs = synchronized(lock) {
+            prepareJobsForVisibleLocked(width)
         }
 
-        val prepared = synchronized(lock) {
-            prepareDrawLocked(contentWidth)
-        }
-
-        for (job in prepared.jobs) {
+        for (job in jobs) {
             analysisExecutor.execute {
                 val energies = analyzeWindow(job.samples, job.bandCount)
                 mainHandler.post {
@@ -282,12 +325,20 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
                 }
             }
         }
-
-        renderSnapshotToCanvas(canvas, prepared.snapshot)
     }
 
-    private fun prepareDrawLocked(contentWidth: Int): PreparedDraw {
-        val visible = visibleColumnKeysLocked(contentWidth)
+    internal fun drawCommittedTo(canvas: AndroidCanvas, width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+
+        val snapshot = synchronized(lock) {
+            makeRenderSnapshotLocked(width, height)
+        }
+
+        renderSnapshotToCanvas(canvas, snapshot)
+    }
+
+    private fun prepareJobsForVisibleLocked(width: Int): List<AnalysisJob> {
+        val visible = visibleColumnKeysLocked(width)
         currentVisibleKeys = visible
 
         for (key in visible) {
@@ -308,18 +359,15 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         }
 
         evictIfNeededLocked()
-
-        return PreparedDraw(
-            snapshot = makeRenderSnapshotLocked(width, height),
-            jobs = jobs
-        )
+        return jobs
     }
 
-    private fun visibleColumnKeysLocked(contentWidth: Int): Set<SpectrogramColumnKey> {
-        if (contentWidth <= 0) return emptySet()
+    private fun visibleColumnKeysLocked(width: Int): Set<SpectrogramColumnKey> {
+        if (width <= 0) return emptySet()
 
         val viewportStart = firstSampleIndex.toDouble()
-        val viewportEnd = viewportStart + contentWidth.toDouble() * samplesPerPixel.toDouble()
+        val viewportEnd =
+            viewportStart + width.toDouble() * samplesPerPixel.toDouble()
 
         if (viewportEnd <= viewportStart) return emptySet()
 
@@ -368,6 +416,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         if (start < 0 || end > samples.size || start >= end) return null
 
         val window = FloatArray(windowSize)
+
         for (i in 0 until windowSize) {
             window[i] = samples[start + i]
         }
@@ -383,7 +432,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
     }
 
     private fun commitJob(job: AnalysisJob, energies: FloatArray) {
-        var shouldInvalidate = false
+        var committedSomething = false
 
         synchronized(lock) {
             if (job.generation != generation) return
@@ -394,9 +443,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
 
             committed[job.key] = CommittedColumn(
                 key = job.key,
-                windowSize = job.windowSize,
                 hopSize = job.hopSize,
-                bandCount = job.bandCount,
                 energies = energies.copyOf()
             )
 
@@ -404,11 +451,11 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             commitThreadIds.add(Thread.currentThread().id)
 
             evictIfNeededLocked()
-            shouldInvalidate = true
+            committedSomething = true
         }
 
-        if (shouldInvalidate) {
-            safeInvalidate()
+        if (committedSomething) {
+            requestRedraw()
         }
     }
 
@@ -428,7 +475,6 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
 
             committed.remove(victim)
             lru.remove(victim)
-            pending.remove(victim)
         }
     }
 
@@ -441,10 +487,6 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         return RenderSnapshot(
             width = width,
             height = height,
-            paddingLeft = paddingLeft,
-            paddingTop = paddingTop,
-            paddingRight = paddingRight,
-            paddingBottom = paddingBottom,
             firstSampleIndex = firstSampleIndex,
             samplesPerPixel = samplesPerPixel,
             bandCount = bandCount,
@@ -452,17 +494,15 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         )
     }
 
-    private fun renderSnapshotToCanvas(canvas: Canvas, snapshot: RenderSnapshot) {
-        val contentLeft = snapshot.paddingLeft
-        val contentTop = snapshot.paddingTop
-        val contentRight = snapshot.width - snapshot.paddingRight
-        val contentBottom = snapshot.height - snapshot.paddingBottom
+    private fun renderSnapshotToCanvas(
+        canvas: AndroidCanvas,
+        snapshot: RenderSnapshot
+    ) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
 
-        val contentWidth = contentRight - contentLeft
-        val contentHeight = contentBottom - contentTop
-
-        paint.style = Paint.Style.FILL
-        paint.color = Color.BLACK
+        paint.color = AndroidColor.BLACK
         canvas.drawRect(
             0f,
             0f,
@@ -471,15 +511,13 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
             paint
         )
 
-        if (contentWidth <= 0 || contentHeight <= 0) return
+        if (snapshot.width <= 0 || snapshot.height <= 0) return
         if (snapshot.bandCount <= 0) return
 
-        canvas.save()
-        canvas.clipRect(contentLeft, contentTop, contentRight, contentBottom)
+        val bandHeight =
+            snapshot.height.toFloat() / snapshot.bandCount.toFloat()
 
-        val bandHeight = contentHeight.toFloat() / snapshot.bandCount.toFloat()
-
-        for (x in 0 until contentWidth) {
+        for (x in 0 until snapshot.width) {
             val sampleStart =
                 snapshot.firstSampleIndex.toDouble() +
                     x.toDouble() * snapshot.samplesPerPixel.toDouble()
@@ -506,6 +544,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
                 hasAnyColumn = true
 
                 val limit = min(snapshot.bandCount, column.energies.size)
+
                 for (band in 0 until limit) {
                     maxBands[band] = max(maxBands[band], column.energies[band])
                 }
@@ -513,8 +552,8 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
 
             if (!hasAnyColumn) continue
 
-            val drawX0 = contentLeft + x.toFloat()
-            val drawX1 = drawX0 + 1f
+            val left = x.toFloat()
+            val right = left + 1f
 
             for (band in 0 until snapshot.bandCount) {
                 val energy = maxBands[band].coerceIn(0f, 1f)
@@ -523,19 +562,16 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
                 paint.color = energyColor(energy)
 
                 val visualBandFromTop = snapshot.bandCount - 1 - band
-                val top = contentTop + visualBandFromTop * bandHeight
-                val bottom = contentTop + (visualBandFromTop + 1) * bandHeight
+                val top = visualBandFromTop * bandHeight
+                val bottom = (visualBandFromTop + 1) * bandHeight
 
-                canvas.drawRect(drawX0, top, drawX1, bottom, paint)
+                canvas.drawRect(left, top, right, bottom, paint)
             }
         }
-
-        canvas.restore()
     }
 
     private fun analyzeWindow(window: FloatArray, bandCount: Int): FloatArray {
         val result = FloatArray(bandCount)
-        if (window.isEmpty()) return result
 
         for (band in 0 until bandCount) {
             val start = floor(
@@ -562,7 +598,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         val e = energy.coerceIn(0f, 1f)
         val r = (255f * e).roundToInt().coerceIn(0, 255)
         val g = (152f * e).roundToInt().coerceIn(0, 255)
-        return Color.argb(255, r, g, 0)
+        return AndroidColor.argb(255, r, g, 0)
     }
 
     private fun sanitizeSample(value: Float): Float {
@@ -575,20 +611,15 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
         }
     }
 
-    private fun safeInvalidate() {
+    private fun requestRedraw() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            invalidate()
+            renderVersion++
         } else {
             mainHandler.post {
-                invalidate()
+                renderVersion++
             }
         }
     }
-
-    private data class PreparedDraw(
-        val snapshot: RenderSnapshot,
-        val jobs: List<AnalysisJob>
-    )
 
     private data class AnalysisJob(
         val generation: Long,
@@ -601,9 +632,7 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
 
     private data class CommittedColumn(
         val key: SpectrogramColumnKey,
-        val windowSize: Int,
         val hopSize: Int,
-        val bandCount: Int,
         val energies: FloatArray
     ) {
         fun copyForSnapshot(): SnapshotColumn {
@@ -624,10 +653,6 @@ class ProgressiveSpectrogramView @JvmOverloads constructor(
     private data class RenderSnapshot(
         val width: Int,
         val height: Int,
-        val paddingLeft: Int,
-        val paddingTop: Int,
-        val paddingRight: Int,
-        val paddingBottom: Int,
         val firstSampleIndex: Long,
         val samplesPerPixel: Float,
         val bandCount: Int,
@@ -646,4 +671,3 @@ data class SpectrogramDebugState(
     val mainThreadId: Long,
     val commitThreadIds: List<Long>
 )
-
