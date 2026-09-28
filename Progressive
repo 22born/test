@@ -1,3 +1,10 @@
+2. The component treats appended samples as one continuous stream. The first sample after construction or clear() is sample 0, the next is sample 1, and so on. These sample numbers are used for column analysis and viewport positioning.
+
+
+
+
+
+
 Compose Progressive Concurrent Spectrogram
 Context
 A Jetpack Compose component renders a live spectrogram timeline. Audio samples may be appended from any thread. The state object analyzes complete sample windows on background threads, commits finished spectrogram columns on the main thread, and the composable draws committed columns as a heatmap.
