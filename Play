@@ -1,1 +1,723 @@
+package com.example.readaloud
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.UUID
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+// -----------------------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------------------
+
+interface SpeechEngine {
+
+    fun speak(
+        text: String,
+        utteranceId: String,
+        listener: Listener,
+    )
+
+    fun stop()
+
+    interface Listener {
+
+        fun onStart(
+            utteranceId: String,
+        )
+
+        fun onRangeStart(
+            utteranceId: String,
+            start: Int,
+            endExclusive: Int,
+        )
+
+        fun onDone(
+            utteranceId: String,
+        )
+
+        fun onError(
+            utteranceId: String,
+        )
+    }
+}
+
+fun interface UtteranceIdGenerator {
+    fun next(): String
+}
+
+data class ReadAloudState(
+    val transcript: String,
+    val isPlaying: Boolean = false,
+    val activeRange: IntRange? = null,
+)
+
+interface ReadAloudController {
+
+    val state: StateFlow<ReadAloudState>
+
+    fun play()
+
+    fun stop()
+
+    fun setTranscript(
+        transcript: String,
+    )
+
+    fun dispose()
+}
+
+// -----------------------------------------------------------------------------
+// Controller
+// -----------------------------------------------------------------------------
+
+class DefaultReadAloudController(
+    initialTranscript: String,
+    private val speechEngine: SpeechEngine,
+    private val idGenerator: UtteranceIdGenerator =
+        UtteranceIdGenerator {
+            UUID.randomUUID().toString()
+        },
+) : ReadAloudController {
+
+    /**
+     * Public state and playback identity are deliberately protected
+     * by the same lock.
+     *
+     * Speech callbacks may arrive concurrently.
+     */
+    private val lock = Any()
+
+    private var currentUtteranceId: String? = null
+
+    private var disposed = false
+
+    private val _state =
+        MutableStateFlow(
+            ReadAloudState(
+                transcript = initialTranscript,
+            ),
+        )
+
+    override val state: StateFlow<ReadAloudState> =
+        _state.asStateFlow()
+
+    override fun play() {
+        val text: String
+        val utteranceId: String
+        val hadExistingSession: Boolean
+
+        synchronized(lock) {
+            if (disposed) {
+                return
+            }
+
+            text = _state.value.transcript
+
+            if (text.isEmpty()) {
+                return
+            }
+
+            /*
+             * Generate a new identity for EVERY playback,
+             * even when the transcript itself has not changed.
+             */
+            utteranceId = idGenerator.next()
+
+            hadExistingSession =
+                currentUtteranceId != null
+
+            /*
+             * Publishing the new identity before interacting with
+             * the engine immediately makes previous callbacks stale.
+             */
+            currentUtteranceId = utteranceId
+
+            _state.value =
+                _state.value.copy(
+                    isPlaying = true,
+                    activeRange = null,
+                )
+        }
+
+        /*
+         * Never hold our state lock while invoking external code.
+         *
+         * If another playback already existed, QUEUE_FLUSH-like
+         * behavior is represented by stop().
+         */
+        if (hadExistingSession) {
+            speechEngine.stop()
+        }
+
+        speechEngine.speak(
+            text = text,
+            utteranceId = utteranceId,
+            listener = listener,
+        )
+    }
+
+    override fun stop() {
+        val shouldStop: Boolean
+
+        synchronized(lock) {
+            if (disposed) {
+                return
+            }
+
+            shouldStop =
+                currentUtteranceId != null ||
+                    _state.value.isPlaying
+
+            /*
+             * Invalidate identity first.
+             *
+             * A callback racing with speechEngine.stop()
+             * therefore cannot become current again.
+             */
+            currentUtteranceId = null
+
+            _state.value =
+                _state.value.copy(
+                    isPlaying = false,
+                    activeRange = null,
+                )
+        }
+
+        if (shouldStop) {
+            speechEngine.stop()
+        }
+    }
+
+    override fun setTranscript(
+        transcript: String,
+    ) {
+        val shouldStop: Boolean
+
+        synchronized(lock) {
+            if (disposed) {
+                return
+            }
+
+            if (_state.value.transcript == transcript) {
+                return
+            }
+
+            shouldStop =
+                currentUtteranceId != null ||
+                    _state.value.isPlaying
+
+            /*
+             * Changing the transcript invalidates the entire
+             * previous playback session.
+             */
+            currentUtteranceId = null
+
+            _state.value =
+                ReadAloudState(
+                    transcript = transcript,
+                    isPlaying = false,
+                    activeRange = null,
+                )
+        }
+
+        if (shouldStop) {
+            speechEngine.stop()
+        }
+    }
+
+    override fun dispose() {
+        val shouldStop: Boolean
+
+        synchronized(lock) {
+            if (disposed) {
+                return
+            }
+
+            shouldStop =
+                currentUtteranceId != null ||
+                    _state.value.isPlaying
+
+            /*
+             * Mark disposed and invalidate the session before
+             * calling external code.
+             */
+            disposed = true
+            currentUtteranceId = null
+
+            _state.value =
+                _state.value.copy(
+                    isPlaying = false,
+                    activeRange = null,
+                )
+        }
+
+        if (shouldStop) {
+            speechEngine.stop()
+        }
+    }
+
+    private val listener =
+        object : SpeechEngine.Listener {
+
+            override fun onStart(
+                utteranceId: String,
+            ) {
+                /*
+                 * Nothing to do.
+                 *
+                 * isPlaying becomes true when playback is requested,
+                 * rather than waiting for the asynchronous callback.
+                 */
+            }
+
+            override fun onRangeStart(
+                utteranceId: String,
+                start: Int,
+                endExclusive: Int,
+            ) {
+                synchronized(lock) {
+
+                    if (!isCurrentLocked(utteranceId)) {
+                        return
+                    }
+
+                    val transcript =
+                        _state.value.transcript
+
+                    /*
+                     * [start, endExclusive)
+                     */
+                    val valid =
+                        start >= 0 &&
+                            endExclusive > start &&
+                            endExclusive <= transcript.length
+
+                    if (!valid) {
+                        /*
+                         * Preserve any existing valid highlight.
+                         */
+                        return
+                    }
+
+                    _state.value =
+                        _state.value.copy(
+                            activeRange =
+                                start until endExclusive,
+                        )
+                }
+            }
+
+            override fun onDone(
+                utteranceId: String,
+            ) {
+                finish(utteranceId)
+            }
+
+            override fun onError(
+                utteranceId: String,
+            ) {
+                finish(utteranceId)
+            }
+        }
+
+    private fun finish(
+        utteranceId: String,
+    ) {
+        synchronized(lock) {
+
+            if (!isCurrentLocked(utteranceId)) {
+                return
+            }
+
+            /*
+             * Nulling the identity is essential.
+             *
+             * A range callback arriving after onDone/onError
+             * must be rejected.
+             */
+            currentUtteranceId = null
+
+            _state.value =
+                _state.value.copy(
+                    isPlaying = false,
+                    activeRange = null,
+                )
+        }
+    }
+
+    private fun isCurrentLocked(
+        utteranceId: String,
+    ): Boolean =
+        !disposed &&
+            _state.value.isPlaying &&
+            currentUtteranceId == utteranceId
+}
+
+// -----------------------------------------------------------------------------
+// Visual line calculation
+// -----------------------------------------------------------------------------
+
+private data class VisibleLine(
+    val text: String,
+    val sourceStart: Int,
+    val sourceEndExclusive: Int,
+)
+
+/**
+ * Selects the visual line containing the active spoken range.
+ *
+ * When no range is active, selects the first visual line.
+ */
+private fun visibleLineFor(
+    transcript: String,
+    layout: androidx.compose.ui.text.TextLayoutResult,
+    activeRange: IntRange?,
+): VisibleLine {
+
+    if (transcript.isEmpty()) {
+        return VisibleLine(
+            text = "",
+            sourceStart = 0,
+            sourceEndExclusive = 0,
+        )
+    }
+
+    val requestedOffset =
+        activeRange?.first ?: 0
+
+    val safeOffset =
+        requestedOffset.coerceIn(
+            minimumValue = 0,
+            maximumValue = transcript.lastIndex,
+        )
+
+    val lineIndex =
+        layout.getLineForOffset(
+            offset = safeOffset,
+        )
+
+    val start =
+        layout.getLineStart(
+            lineIndex = lineIndex,
+        )
+
+    /*
+     * visibleEnd=true excludes trailing whitespace/newline
+     * characters that should not be visually rendered.
+     */
+    val endExclusive =
+        layout.getLineEnd(
+            lineIndex = lineIndex,
+            visibleEnd = true,
+        ).coerceAtLeast(start)
+
+    return VisibleLine(
+        text = transcript.substring(
+            startIndex = start,
+            endIndex = endExclusive,
+        ),
+        sourceStart = start,
+        sourceEndExclusive = endExclusive,
+    )
+}
+
+/**
+ * Converts a transcript-global range into the part of that range
+ * belonging to the currently displayed visual line.
+ */
+private fun localHighlightRange(
+    activeRange: IntRange?,
+    line: VisibleLine,
+): IntRange? {
+
+    if (activeRange == null) {
+        return null
+    }
+
+    if (line.text.isEmpty()) {
+        return null
+    }
+
+    val activeStart =
+        activeRange.first
+
+    val activeEndExclusive =
+        activeRange.last + 1
+
+    val intersectionStart =
+        maxOf(
+            activeStart,
+            line.sourceStart,
+        )
+
+    val intersectionEndExclusive =
+        minOf(
+            activeEndExclusive,
+            line.sourceEndExclusive,
+        )
+
+    if (
+        intersectionStart >=
+        intersectionEndExclusive
+    ) {
+        return null
+    }
+
+    return (
+        intersectionStart -
+            line.sourceStart
+        ) until (
+        intersectionEndExclusive -
+            line.sourceStart
+        )
+}
+
+// -----------------------------------------------------------------------------
+// Stateless rendering
+// -----------------------------------------------------------------------------
+
+private val SpokenWordOrange =
+    Color(0xFFFF9800)
+
+private val TranscriptTextStyle =
+    TextStyle(
+        fontSize = 20.sp,
+        textAlign = TextAlign.Center,
+    )
+
+@Composable
+private fun ReadAloudTranscriptContent(
+    transcript: String,
+    activeRange: IntRange?,
+    modifier: Modifier = Modifier,
+) {
+    if (transcript.isEmpty()) {
+        return
+    }
+
+    val textMeasurer =
+        rememberTextMeasurer()
+
+    BoxWithConstraints(
+        modifier = modifier.clipToBounds(),
+    ) {
+        val availableWidthPx =
+            constraints.maxWidth
+
+        if (availableWidthPx <= 0) {
+            return@BoxWithConstraints
+        }
+
+        /*
+         * IMPORTANT:
+         *
+         * Measure the COMPLETE transcript with wrapping enabled.
+         *
+         * We intentionally do NOT set maxLines=1 here.
+         *
+         * Compose must first determine every visual line so that
+         * getLineForOffset() can locate the line containing the
+         * currently spoken range.
+         */
+        val layout =
+            textMeasurer.measure(
+                text =
+                    AnnotatedString(
+                        transcript,
+                    ),
+                style =
+                    TranscriptTextStyle,
+                softWrap = true,
+                overflow =
+                    TextOverflow.Clip,
+                constraints =
+                    Constraints(
+                        maxWidth =
+                            availableWidthPx,
+                    ),
+            )
+
+        val visibleLine =
+            visibleLineFor(
+                transcript = transcript,
+                layout = layout,
+                activeRange = activeRange,
+            )
+
+        val highlight =
+            localHighlightRange(
+                activeRange = activeRange,
+                line = visibleLine,
+            )
+
+        val annotatedLine =
+            buildAnnotatedString {
+
+                append(
+                    visibleLine.text,
+                )
+
+                if (highlight != null) {
+                    addStyle(
+                        style =
+                            SpanStyle(
+                                /*
+                                 * Only foreground color changes.
+                                 *
+                                 * Font size/weight/spacing are
+                                 * intentionally unchanged so the
+                                 * highlight cannot cause reflow.
+                                 */
+                                color =
+                                    SpokenWordOrange,
+                            ),
+                        start =
+                            highlight.first,
+                        end =
+                            highlight.last + 1,
+                    )
+                }
+            }
+
+        Text(
+            text = annotatedLine,
+            modifier =
+                Modifier.fillMaxWidth(),
+            style =
+                TranscriptTextStyle,
+
+            /*
+             * The paragraph was measured above.
+             *
+             * This Text receives only the selected visual line,
+             * and is prohibited from displaying a second line.
+             */
+            maxLines = 1,
+            softWrap = false,
+            overflow =
+                TextOverflow.Clip,
+        )
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Main UI
+// -----------------------------------------------------------------------------
+
+@Composable
+fun ReadAloudTranscript(
+    transcript: String,
+    speechEngine: SpeechEngine,
+    modifier: Modifier = Modifier,
+) {
+    val controller =
+        remember(speechEngine) {
+            DefaultReadAloudController(
+                initialTranscript =
+                    transcript,
+                speechEngine =
+                    speechEngine,
+            )
+        }
+
+    /*
+     * Synchronize externally supplied transcript changes.
+     */
+    LaunchedEffect(
+        controller,
+        transcript,
+    ) {
+        controller.setTranscript(
+            transcript,
+        )
+    }
+
+    /*
+     * Leaving composition invalidates any current playback
+     * session and stops the engine.
+     */
+    DisposableEffect(controller) {
+        onDispose {
+            controller.dispose()
+        }
+    }
+
+    val state by
+        controller.state
+            .collectAsStateWithLifecycle()
+
+    Column(
+        modifier =
+            modifier.fillMaxWidth(),
+        horizontalAlignment =
+            Alignment.CenterHorizontally,
+        verticalArrangement =
+            Arrangement.Top,
+    ) {
+
+        /*
+         * Exactly one button.
+         */
+        Button(
+            enabled =
+                state.transcript.isNotEmpty(),
+            onClick = {
+                if (state.isPlaying) {
+                    controller.stop()
+                } else {
+                    controller.play()
+                }
+            },
+        ) {
+            Text(
+                text =
+                    if (state.isPlaying) {
+                        "Stop"
+                    } else {
+                        "Play"
+                    },
+            )
+        }
+
+        /*
+         * Exactly one transcript visual line below the button.
+         */
+        ReadAloudTranscriptContent(
+            transcript =
+                state.transcript,
+            activeRange =
+                state.activeRange,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+        )
+    }
+}
