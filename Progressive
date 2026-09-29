@@ -1,1 +1,27 @@
+Add these requirements
+5a. Column and pixel ranges use half-open interval intersection. Two ranges intersect only if rangeA.start < rangeB.end and rangeA.end > rangeB.start. Boundary-touching ranges do not intersect.
+10a. Scheduling must be driven only by ProgressiveSpectrogram being composed at a positive pixel size. Tests must not call private/internal scheduling helpers. Recomposition, redraw, size change, or state revision changes may trigger scheduling, but duplicate pending jobs for the same column and generation are forbidden.
+11a. Viewport changes do not invalidate committed or pending columns, because columns are defined in sample time, not screen space. A pending column may still commit after a viewport change if its generation and config are current. Eviction after that commit must use the latest visible-column set, not the visible set from when the job was scheduled.
+13a. If a committed column is read by renderSnapshot or by the composable renderer, it becomes recently used for LRU purposes. Merely being pending does not update LRU.
+14a. renderSnapshot must use the exact same rendering rules as the composable renderer, including half-open range intersection, max aggregation, band orientation, and color formula.
+Then add all six tests
+Yes, add tests 15–20:
+15. Half-open boundary intersections
+Use windowSize = 4, hopSize = 4, samplesPerPixel = 4, and width = 2.
 
+Column 0 renders [0, 4).
+Column 1 renders [4, 8).
+Pixel 0 renders [0, 4).
+Pixel 1 renders [4, 8).
+
+Verify column 0 affects only pixel 0 and column 1 affects only pixel 1. Verify column 0 does not bleed into pixel 1 merely because its end equals pixel 1’s start.
+16. Fractional viewport boundaries
+Use non-integer samplesPerPixel, such as 1.5f, and a non-zero firstSampleIndex. Verify columns are included only when their half-open display ranges truly intersect the pixel range.
+17. Viewport change does not stale current jobs
+Start with viewport A and schedule visible columns 0, 1, 2. Before workers complete, switch to viewport B where those columns are offscreen but the config/generation is unchanged. Complete the old jobs. Verify they are allowed to commit, but may be evicted according to latest visibility and cache pressure.
+18. Latest visibility controls eviction
+Use maxCachedColumns = 2. Schedule columns while viewport A is visible, then switch to viewport B before completion. Complete old jobs out of order. Verify eviction protects columns visible in viewport B, not columns that were visible when the jobs were scheduled.
+19. Snapshot marks used for LRU
+Commit columns 0, 1, and 2 with maxCachedColumns = 3. Call renderSnapshot with a viewport that reads column 0. Then pan and commit a new offscreen column under cache pressure. Verify column 0 is treated as recently used and a less-recent non-visible column is evicted first.
+20. Compose scheduling only through composition
+Do not call any internal scheduling method. Set content with ProgressiveSpectrogram(state, Modifier.size(...)), run Compose/main-thread work, and verify pending jobs appear. Recompose several times with the same state and size. Verify no duplicate jobs are submitted.
