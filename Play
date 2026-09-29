@@ -1,23 +1,34 @@
 package com.example.readaloud
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
+import android.content.Context
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -26,15 +37,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.compose.runtime.collectAsState
 
-// -----------------------------------------------------------------------------
-// Public API
-// -----------------------------------------------------------------------------
+
+// =============================================================================
+// Speech API
+// =============================================================================
 
 interface SpeechEngine {
 
@@ -52,6 +65,13 @@ interface SpeechEngine {
             utteranceId: String,
         )
 
+        /**
+         * Range uses:
+         *
+         * [start, endExclusive)
+         *
+         * against the original transcript.
+         */
         fun onRangeStart(
             utteranceId: String,
             start: Int,
@@ -68,15 +88,147 @@ interface SpeechEngine {
     }
 }
 
-fun interface UtteranceIdGenerator {
-    fun next(): String
+
+// =============================================================================
+// Android TextToSpeech implementation
+// =============================================================================
+
+class AndroidSpeechEngine(
+    context: Context,
+) : SpeechEngine {
+
+    private var listener: SpeechEngine.Listener? = null
+
+    private var initialized = false
+
+    private val textToSpeech: TextToSpeech
+
+    init {
+        textToSpeech = TextToSpeech(
+            context.applicationContext,
+        ) { status ->
+
+            initialized =
+                status == TextToSpeech.SUCCESS
+
+            if (initialized) {
+                textToSpeech.language =
+                    Locale.getDefault()
+            }
+        }
+
+        textToSpeech.setOnUtteranceProgressListener(
+            object : UtteranceProgressListener() {
+
+                override fun onStart(
+                    utteranceId: String,
+                ) {
+                    listener?.onStart(
+                        utteranceId,
+                    )
+                }
+
+                override fun onRangeStart(
+                    utteranceId: String,
+                    start: Int,
+                    end: Int,
+                    frame: Int,
+                ) {
+                    listener?.onRangeStart(
+                        utteranceId = utteranceId,
+                        start = start,
+                        endExclusive = end,
+                    )
+                }
+
+                override fun onDone(
+                    utteranceId: String,
+                ) {
+                    listener?.onDone(
+                        utteranceId,
+                    )
+                }
+
+                @Deprecated(
+                    "Deprecated Android callback",
+                )
+                override fun onError(
+                    utteranceId: String,
+                ) {
+                    listener?.onError(
+                        utteranceId,
+                    )
+                }
+
+                override fun onError(
+                    utteranceId: String,
+                    errorCode: Int,
+                ) {
+                    listener?.onError(
+                        utteranceId,
+                    )
+                }
+            },
+        )
+    }
+
+    override fun speak(
+        text: String,
+        utteranceId: String,
+        listener: SpeechEngine.Listener,
+    ) {
+        this.listener = listener
+
+        if (!initialized) {
+            listener.onError(utteranceId)
+            return
+        }
+
+        textToSpeech.speak(
+            text,
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            utteranceId,
+        )
+    }
+
+    override fun stop() {
+        textToSpeech.stop()
+    }
+
+    fun shutdown() {
+        listener = null
+        textToSpeech.stop()
+        textToSpeech.shutdown()
+    }
 }
+
+
+// =============================================================================
+// State
+// =============================================================================
 
 data class ReadAloudState(
     val transcript: String,
     val isPlaying: Boolean = false,
+
+    /**
+     * Stored as Kotlin IntRange.
+     *
+     * TTS:
+     * [start, endExclusive)
+     *
+     * becomes:
+     * start until endExclusive
+     */
     val activeRange: IntRange? = null,
 )
+
+
+fun interface UtteranceIdGenerator {
+    fun next(): String
+}
+
 
 interface ReadAloudController {
 
@@ -93,9 +245,10 @@ interface ReadAloudController {
     fun dispose()
 }
 
-// -----------------------------------------------------------------------------
-// Controller
-// -----------------------------------------------------------------------------
+
+// =============================================================================
+// Thread-safe controller
+// =============================================================================
 
 class DefaultReadAloudController(
     initialTranscript: String,
@@ -106,58 +259,74 @@ class DefaultReadAloudController(
         },
 ) : ReadAloudController {
 
-    /**
-     * Public state and playback identity are deliberately protected
-     * by the same lock.
+    /*
+     * TTS callbacks may arrive asynchronously.
      *
-     * Speech callbacks may arrive concurrently.
+     * Both the public state and current utterance identity
+     * are protected by the same lock.
      */
     private val lock = Any()
 
-    private var currentUtteranceId: String? = null
+    private var currentUtteranceId: String? =
+        null
 
-    private var disposed = false
+    private var disposed =
+        false
 
     private val _state =
         MutableStateFlow(
             ReadAloudState(
-                transcript = initialTranscript,
+                transcript =
+                    initialTranscript,
             ),
         )
 
-    override val state: StateFlow<ReadAloudState> =
+    override val state:
+        StateFlow<ReadAloudState> =
         _state.asStateFlow()
 
+
+    // -------------------------------------------------------------------------
+    // Play
+    // -------------------------------------------------------------------------
+
     override fun play() {
+
         val text: String
         val utteranceId: String
-        val hadExistingSession: Boolean
+        val previousSessionExists: Boolean
 
         synchronized(lock) {
+
             if (disposed) {
                 return
             }
 
-            text = _state.value.transcript
+            text =
+                _state.value.transcript
 
             if (text.isEmpty()) {
                 return
             }
 
             /*
-             * Generate a new identity for EVERY playback,
-             * even when the transcript itself has not changed.
+             * A new ID is generated for every playback.
+             *
+             * This is required even when replaying exactly
+             * the same transcript.
              */
-            utteranceId = idGenerator.next()
+            utteranceId =
+                idGenerator.next()
 
-            hadExistingSession =
+            previousSessionExists =
                 currentUtteranceId != null
 
             /*
-             * Publishing the new identity before interacting with
-             * the engine immediately makes previous callbacks stale.
+             * Installing the new ID immediately invalidates
+             * callbacks from the previous session.
              */
-            currentUtteranceId = utteranceId
+            currentUtteranceId =
+                utteranceId
 
             _state.value =
                 _state.value.copy(
@@ -167,12 +336,9 @@ class DefaultReadAloudController(
         }
 
         /*
-         * Never hold our state lock while invoking external code.
-         *
-         * If another playback already existed, QUEUE_FLUSH-like
-         * behavior is represented by stop().
+         * Do not call external code while holding lock.
          */
-        if (hadExistingSession) {
+        if (previousSessionExists) {
             speechEngine.stop()
         }
 
@@ -183,10 +349,17 @@ class DefaultReadAloudController(
         )
     }
 
+
+    // -------------------------------------------------------------------------
+    // Stop
+    // -------------------------------------------------------------------------
+
     override fun stop() {
+
         val shouldStop: Boolean
 
         synchronized(lock) {
+
             if (disposed) {
                 return
             }
@@ -196,12 +369,11 @@ class DefaultReadAloudController(
                     _state.value.isPlaying
 
             /*
-             * Invalidate identity first.
-             *
-             * A callback racing with speechEngine.stop()
-             * therefore cannot become current again.
+             * Invalidate the session BEFORE asking
+             * the external engine to stop.
              */
-            currentUtteranceId = null
+            currentUtteranceId =
+                null
 
             _state.value =
                 _state.value.copy(
@@ -214,18 +386,28 @@ class DefaultReadAloudController(
             speechEngine.stop()
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Transcript replacement
+    // -------------------------------------------------------------------------
 
     override fun setTranscript(
         transcript: String,
     ) {
+
         val shouldStop: Boolean
 
         synchronized(lock) {
+
             if (disposed) {
                 return
             }
 
-            if (_state.value.transcript == transcript) {
+            if (
+                _state.value.transcript ==
+                transcript
+            ) {
                 return
             }
 
@@ -234,16 +416,20 @@ class DefaultReadAloudController(
                     _state.value.isPlaying
 
             /*
-             * Changing the transcript invalidates the entire
-             * previous playback session.
+             * Immediately invalidate callbacks
+             * belonging to the previous transcript.
              */
-            currentUtteranceId = null
+            currentUtteranceId =
+                null
 
             _state.value =
                 ReadAloudState(
-                    transcript = transcript,
-                    isPlaying = false,
-                    activeRange = null,
+                    transcript =
+                        transcript,
+                    isPlaying =
+                        false,
+                    activeRange =
+                        null,
                 )
         }
 
@@ -252,10 +438,17 @@ class DefaultReadAloudController(
         }
     }
 
+
+    // -------------------------------------------------------------------------
+    // Dispose
+    // -------------------------------------------------------------------------
+
     override fun dispose() {
+
         val shouldStop: Boolean
 
         synchronized(lock) {
+
             if (disposed) {
                 return
             }
@@ -265,11 +458,14 @@ class DefaultReadAloudController(
                     _state.value.isPlaying
 
             /*
-             * Mark disposed and invalidate the session before
-             * calling external code.
+             * Mark disposed first so any concurrent
+             * callback becomes invalid.
              */
-            disposed = true
-            currentUtteranceId = null
+            disposed =
+                true
+
+            currentUtteranceId =
+                null
 
             _state.value =
                 _state.value.copy(
@@ -282,6 +478,11 @@ class DefaultReadAloudController(
             speechEngine.stop()
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // TTS listener
+    // -------------------------------------------------------------------------
 
     private val listener =
         object : SpeechEngine.Listener {
@@ -290,21 +491,31 @@ class DefaultReadAloudController(
                 utteranceId: String,
             ) {
                 /*
-                 * Nothing to do.
+                 * Nothing required.
                  *
-                 * isPlaying becomes true when playback is requested,
-                 * rather than waiting for the asynchronous callback.
+                 * We consider playback active immediately
+                 * after Play is pressed.
                  */
             }
+
 
             override fun onRangeStart(
                 utteranceId: String,
                 start: Int,
                 endExclusive: Int,
             ) {
+
                 synchronized(lock) {
 
-                    if (!isCurrentLocked(utteranceId)) {
+                    /*
+                     * Ignore callbacks from old,
+                     * stopped or disposed sessions.
+                     */
+                    if (
+                        !isCurrentLocked(
+                            utteranceId,
+                        )
+                    ) {
                         return
                     }
 
@@ -312,16 +523,23 @@ class DefaultReadAloudController(
                         _state.value.transcript
 
                     /*
-                     * [start, endExclusive)
+                     * Valid range:
+                     *
+                     * 0 <= start
+                     * start < endExclusive
+                     * endExclusive <= text.length
                      */
                     val valid =
                         start >= 0 &&
                             endExclusive > start &&
-                            endExclusive <= transcript.length
+                            endExclusive <=
+                            transcript.length
 
                     if (!valid) {
                         /*
-                         * Preserve any existing valid highlight.
+                         * Invalid callback must NOT
+                         * clear an existing valid
+                         * highlight.
                          */
                         return
                     }
@@ -329,40 +547,58 @@ class DefaultReadAloudController(
                     _state.value =
                         _state.value.copy(
                             activeRange =
-                                start until endExclusive,
+                                start until
+                                    endExclusive,
                         )
                 }
             }
 
+
             override fun onDone(
                 utteranceId: String,
             ) {
-                finish(utteranceId)
+                finish(
+                    utteranceId,
+                )
             }
+
 
             override fun onError(
                 utteranceId: String,
             ) {
-                finish(utteranceId)
+                finish(
+                    utteranceId,
+                )
             }
         }
+
+
+    // -------------------------------------------------------------------------
+    // Terminal callback
+    // -------------------------------------------------------------------------
 
     private fun finish(
         utteranceId: String,
     ) {
+
         synchronized(lock) {
 
-            if (!isCurrentLocked(utteranceId)) {
+            if (
+                !isCurrentLocked(
+                    utteranceId,
+                )
+            ) {
                 return
             }
 
             /*
-             * Nulling the identity is essential.
+             * Invalidate ID.
              *
-             * A range callback arriving after onDone/onError
-             * must be rejected.
+             * Any later range callback for this
+             * utterance will now be ignored.
              */
-            currentUtteranceId = null
+            currentUtteranceId =
+                null
 
             _state.value =
                 _state.value.copy(
@@ -372,17 +608,20 @@ class DefaultReadAloudController(
         }
     }
 
+
     private fun isCurrentLocked(
         utteranceId: String,
     ): Boolean =
         !disposed &&
             _state.value.isPlaying &&
-            currentUtteranceId == utteranceId
+            currentUtteranceId ==
+                utteranceId
 }
 
-// -----------------------------------------------------------------------------
-// Visual line calculation
-// -----------------------------------------------------------------------------
+
+// =============================================================================
+// Visual-line representation
+// =============================================================================
 
 private data class VisibleLine(
     val text: String,
@@ -390,18 +629,19 @@ private data class VisibleLine(
     val sourceEndExclusive: Int,
 )
 
-/**
- * Selects the visual line containing the active spoken range.
- *
- * When no range is active, selects the first visual line.
- */
+
+// =============================================================================
+// Determine which visual line should be displayed
+// =============================================================================
+
 private fun visibleLineFor(
     transcript: String,
-    layout: androidx.compose.ui.text.TextLayoutResult,
+    layout: TextLayoutResult,
     activeRange: IntRange?,
 ): VisibleLine {
 
     if (transcript.isEmpty()) {
+
         return VisibleLine(
             text = "",
             sourceStart = 0,
@@ -409,28 +649,39 @@ private fun visibleLineFor(
         )
     }
 
+    /*
+     * No active speech:
+     *
+     * display the first visual line.
+     */
     val requestedOffset =
         activeRange?.first ?: 0
 
     val safeOffset =
         requestedOffset.coerceIn(
             minimumValue = 0,
-            maximumValue = transcript.lastIndex,
+            maximumValue =
+                transcript.lastIndex,
         )
 
+    /*
+     * Compose knows which visual line owns
+     * this character position.
+     */
     val lineIndex =
         layout.getLineForOffset(
-            offset = safeOffset,
+            safeOffset,
         )
 
     val start =
         layout.getLineStart(
-            lineIndex = lineIndex,
+            lineIndex,
         )
 
     /*
-     * visibleEnd=true excludes trailing whitespace/newline
-     * characters that should not be visually rendered.
+     * visibleEnd=true removes trailing
+     * spaces/newline characters from the
+     * visible line.
      */
     val endExclusive =
         layout.getLineEnd(
@@ -439,19 +690,23 @@ private fun visibleLineFor(
         ).coerceAtLeast(start)
 
     return VisibleLine(
-        text = transcript.substring(
-            startIndex = start,
-            endIndex = endExclusive,
-        ),
-        sourceStart = start,
-        sourceEndExclusive = endExclusive,
+        text =
+            transcript.substring(
+                startIndex = start,
+                endIndex = endExclusive,
+            ),
+        sourceStart =
+            start,
+        sourceEndExclusive =
+            endExclusive,
     )
 }
 
-/**
- * Converts a transcript-global range into the part of that range
- * belonging to the currently displayed visual line.
- */
+
+// =============================================================================
+// Convert global TTS range to line-local range
+// =============================================================================
+
 private fun localHighlightRange(
     activeRange: IntRange?,
     line: VisibleLine,
@@ -465,12 +720,25 @@ private fun localHighlightRange(
         return null
     }
 
+    /*
+     * Convert Kotlin's inclusive IntRange back
+     * into [start, endExclusive).
+     */
     val activeStart =
         activeRange.first
 
     val activeEndExclusive =
         activeRange.last + 1
 
+    /*
+     * Calculate intersection between:
+     *
+     * active speech range
+     *
+     * and
+     *
+     * displayed visual line.
+     */
     val intersectionStart =
         maxOf(
             activeStart,
@@ -490,18 +758,26 @@ private fun localHighlightRange(
         return null
     }
 
-    return (
+    /*
+     * Convert transcript-global positions
+     * into positions inside line.text.
+     */
+    val localStart =
         intersectionStart -
             line.sourceStart
-        ) until (
+
+    val localEndExclusive =
         intersectionEndExclusive -
             line.sourceStart
-        )
+
+    return localStart until
+        localEndExclusive
 }
 
-// -----------------------------------------------------------------------------
-// Stateless rendering
-// -----------------------------------------------------------------------------
+
+// =============================================================================
+// Visual constants
+// =============================================================================
 
 private val SpokenWordOrange =
     Color(0xFFFF9800)
@@ -512,12 +788,21 @@ private val TranscriptTextStyle =
         textAlign = TextAlign.Center,
     )
 
+
+// =============================================================================
+// Transcript rendering
+// =============================================================================
+
 @Composable
 private fun ReadAloudTranscriptContent(
     transcript: String,
     activeRange: IntRange?,
     modifier: Modifier = Modifier,
 ) {
+
+    /*
+     * Empty transcript has no visible text.
+     */
     if (transcript.isEmpty()) {
         return
     }
@@ -525,26 +810,51 @@ private fun ReadAloudTranscriptContent(
     val textMeasurer =
         rememberTextMeasurer()
 
-    BoxWithConstraints(
-        modifier = modifier.clipToBounds(),
-    ) {
-        val availableWidthPx =
-            constraints.maxWidth
+    /*
+     * Width in physical pixels.
+     *
+     * TextMeasurer constraints operate in px,
+     * so onSizeChanged gives exactly what we need.
+     */
+    var availableWidthPx by
+        remember {
+            mutableIntStateOf(0)
+        }
 
+    Box(
+        modifier =
+            modifier
+                .clipToBounds()
+                .onSizeChanged { size ->
+                    availableWidthPx =
+                        size.width
+                },
+    ) {
+
+        /*
+         * First layout pass may not have a
+         * measured width yet.
+         */
         if (availableWidthPx <= 0) {
-            return@BoxWithConstraints
+            return@Box
         }
 
         /*
          * IMPORTANT:
          *
-         * Measure the COMPLETE transcript with wrapping enabled.
+         * Measure the COMPLETE transcript.
          *
-         * We intentionally do NOT set maxLines=1 here.
+         * Wrapping is enabled.
          *
-         * Compose must first determine every visual line so that
-         * getLineForOffset() can locate the line containing the
-         * currently spoken range.
+         * We must allow Compose to determine:
+         *
+         * line 0
+         * line 1
+         * line 2
+         * ...
+         *
+         * before selecting the line containing
+         * the active spoken range.
          */
         val layout =
             textMeasurer.measure(
@@ -554,7 +864,8 @@ private fun ReadAloudTranscriptContent(
                     ),
                 style =
                     TranscriptTextStyle,
-                softWrap = true,
+                softWrap =
+                    true,
                 overflow =
                     TextOverflow.Clip,
                 constraints =
@@ -564,19 +875,34 @@ private fun ReadAloudTranscriptContent(
                     ),
             )
 
+        /*
+         * Select exactly one visual line.
+         */
         val visibleLine =
             visibleLineFor(
-                transcript = transcript,
-                layout = layout,
-                activeRange = activeRange,
+                transcript =
+                    transcript,
+                layout =
+                    layout,
+                activeRange =
+                    activeRange,
             )
 
-        val highlight =
+        /*
+         * Determine which portion of the
+         * displayed line should be orange.
+         */
+        val localHighlight =
             localHighlightRange(
-                activeRange = activeRange,
-                line = visibleLine,
+                activeRange =
+                    activeRange,
+                line =
+                    visibleLine,
             )
 
+        /*
+         * Build displayed line.
+         */
         val annotatedLine =
             buildAnnotatedString {
 
@@ -584,52 +910,58 @@ private fun ReadAloudTranscriptContent(
                     visibleLine.text,
                 )
 
-                if (highlight != null) {
+                if (
+                    localHighlight != null
+                ) {
+
                     addStyle(
                         style =
                             SpanStyle(
                                 /*
-                                 * Only foreground color changes.
+                                 * ONLY foreground color changes.
                                  *
-                                 * Font size/weight/spacing are
-                                 * intentionally unchanged so the
-                                 * highlight cannot cause reflow.
+                                 * No bold.
+                                 * No font-size change.
+                                 * No spacing change.
+                                 *
+                                 * Therefore highlighting cannot
+                                 * cause text reflow.
                                  */
                                 color =
                                     SpokenWordOrange,
                             ),
                         start =
-                            highlight.first,
+                            localHighlight.first,
                         end =
-                            highlight.last + 1,
+                            localHighlight.last + 1,
                     )
                 }
             }
 
+        /*
+         * Render only the selected visual line.
+         */
         Text(
-            text = annotatedLine,
+            text =
+                annotatedLine,
             modifier =
                 Modifier.fillMaxWidth(),
             style =
                 TranscriptTextStyle,
-
-            /*
-             * The paragraph was measured above.
-             *
-             * This Text receives only the selected visual line,
-             * and is prohibited from displaying a second line.
-             */
-            maxLines = 1,
-            softWrap = false,
+            maxLines =
+                1,
+            softWrap =
+                false,
             overflow =
                 TextOverflow.Clip,
         )
     }
 }
 
-// -----------------------------------------------------------------------------
-// Main UI
-// -----------------------------------------------------------------------------
+
+// =============================================================================
+// Main reusable component
+// =============================================================================
 
 @Composable
 fun ReadAloudTranscript(
@@ -637,8 +969,16 @@ fun ReadAloudTranscript(
     speechEngine: SpeechEngine,
     modifier: Modifier = Modifier,
 ) {
+
+    /*
+     * Controller survives recompositions.
+     *
+     * If a different SpeechEngine is supplied,
+     * Compose creates a new controller.
+     */
     val controller =
         remember(speechEngine) {
+
             DefaultReadAloudController(
                 initialTranscript =
                     transcript,
@@ -648,22 +988,23 @@ fun ReadAloudTranscript(
         }
 
     /*
-     * Synchronize externally supplied transcript changes.
+     * Handle transcript parameter changes.
      */
     LaunchedEffect(
         controller,
         transcript,
     ) {
+
         controller.setTranscript(
             transcript,
         )
     }
 
     /*
-     * Leaving composition invalidates any current playback
-     * session and stops the engine.
+     * Leaving composition invalidates playback.
      */
     DisposableEffect(controller) {
+
         onDispose {
             controller.dispose()
         }
@@ -671,15 +1012,20 @@ fun ReadAloudTranscript(
 
     val state by
         controller.state
-            .collectAsStateWithLifecycle()
+            .collectAsState()
 
+    /*
+     * UI:
+     *
+     *          Play / Stop
+     *
+     *      transcript line
+     */
     Column(
         modifier =
             modifier.fillMaxWidth(),
         horizontalAlignment =
             Alignment.CenterHorizontally,
-        verticalArrangement =
-            Arrangement.Top,
     ) {
 
         /*
@@ -687,18 +1033,26 @@ fun ReadAloudTranscript(
          */
         Button(
             enabled =
-                state.transcript.isNotEmpty(),
+                state.transcript
+                    .isNotEmpty(),
             onClick = {
+
                 if (state.isPlaying) {
+
                     controller.stop()
+
                 } else {
+
                     controller.play()
                 }
             },
         ) {
+
             Text(
                 text =
-                    if (state.isPlaying) {
+                    if (
+                        state.isPlaying
+                    ) {
                         "Stop"
                     } else {
                         "Play"
@@ -706,8 +1060,13 @@ fun ReadAloudTranscript(
             )
         }
 
+        Spacer(
+            modifier =
+                Modifier.height(24.dp),
+        )
+
         /*
-         * Exactly one transcript visual line below the button.
+         * Exactly one transcript visual line.
          */
         ReadAloudTranscriptContent(
             transcript =
@@ -715,9 +1074,74 @@ fun ReadAloudTranscript(
             activeRange =
                 state.activeRange,
             modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 16.dp),
+                Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+
+// =============================================================================
+// Screen / usage from another Composable
+// =============================================================================
+
+@Composable
+fun TranscriptScreen(
+    modifier: Modifier = Modifier,
+) {
+
+    val context =
+        LocalContext.current
+
+    /*
+     * The Android TTS engine is created once for
+     * this screen.
+     */
+    val speechEngine =
+        remember {
+            AndroidSpeechEngine(
+                context =
+                    context.applicationContext,
+            )
+        }
+
+    /*
+     * Android TextToSpeech owns native resources,
+     * so release them when this screen permanently
+     * leaves composition.
+     */
+    DisposableEffect(speechEngine) {
+
+        onDispose {
+            speechEngine.shutdown()
+        }
+    }
+
+    val transcript =
+        """
+        The quick brown fox jumps over the lazy dog. 
+        Jetpack Compose makes Android UI development easier and more declarative.
+        This transcript is read aloud one word at a time.
+        """.trimIndent()
+
+    /*
+     * Whole screen.
+     */
+    Column(
+        modifier =
+            modifier
+                .fillMaxSize()
+                .padding(24.dp),
+        horizontalAlignment =
+            Alignment.CenterHorizontally,
+    ) {
+
+        ReadAloudTranscript(
+            transcript =
+                transcript,
+            speechEngine =
+                speechEngine,
+            modifier =
+                Modifier.fillMaxWidth(),
         )
     }
 }
