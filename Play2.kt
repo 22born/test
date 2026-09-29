@@ -1,3 +1,35 @@
+class MainActivity : ComponentActivity() {
+
+    private val readAloudViewModel: ReadAloudViewModel by viewModels {
+        ReadAloudViewModelFactory(application)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val transcript =
+            """
+            The quick brown fox jumps over the lazy dog.
+            Jetpack Compose calculates the actual visual lines.
+            Pause and rotate the device while this is being spoken.
+            """.trimIndent()
+
+        setContent {
+            MaterialTheme {
+                TranscriptScreen(
+                    transcript = transcript,
+                    viewModel = readAloudViewModel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                )
+            }
+        }
+    }
+}
+
+
+
 package com.example.readaloud
 
 import android.app.Application
