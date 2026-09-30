@@ -1,3 +1,11 @@
+AndroidSpeechEngine     ← implement SpeechEngine
+ReadAloudViewModel      ← playback/session/lifecycle state
+supporting UI/layout    ← line measurement + highlighting
+
+
+
+
+
 Android Read-Aloud Transcript
 
 Build a Jetpack Compose screen that reads a supplied transcript aloud and visually follows the currently spoken text.
