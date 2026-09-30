@@ -1,3 +1,376 @@
+Android Read-Aloud Transcript
+
+Build a Jetpack Compose screen that reads a supplied transcript aloud and visually follows the currently spoken text.
+
+The starter project provides "MainActivity", "TranscriptScreen", and the "SpeechEngine" contract. You may add or restructure code as needed.
+
+Requirements
+
+UI
+
+The screen must contain exactly two buttons above the transcript:
+
+- Play / Pause
+- Stop
+
+Button behavior:
+
+- STOPPED → "Play"
+- PLAYING → "Pause"
+- PAUSED → "Play"
+- "Stop" is enabled only while playing or paused.
+- For an empty transcript, both buttons are disabled and no speech starts.
+
+Below the buttons, display exactly one visual line of transcript text.
+
+The transcript must be:
+
+- horizontally centered;
+- exactly "20sp";
+- highlighted using foreground color "#FF9800" for the currently spoken range.
+
+Highlighting must change foreground color only and must not cause text to reflow.
+
+Speech
+
+Use the supplied "SpeechEngine" interface for playback. The production implementation must use Android "TextToSpeech".
+
+"onRangeStart()" provides "[start, endExclusive)" offsets into the exact string supplied to that "speak()" request. These use normal Android/Kotlin UTF-16 "String" indexing.
+
+Use these offsets as the source of truth. Do not estimate speech timing or locate spoken words by searching their text.
+
+Invalid ranges must be ignored without crashing or replacing the previous valid highlight.
+
+Visual lines
+
+Only one visual line is displayed at a time.
+
+Visual lines must be determined from actual Compose text layout and available width. Do not split using a fixed number of characters or words.
+
+- With no active range, display the first visual line.
+- With an active range, display the line containing its start.
+- Explicit newlines create line boundaries.
+- If a range crosses lines, display the line containing its start and highlight only the portion visible on that line.
+- If a range starts at the first character of the next line, display that next line.
+- Trailing whitespace/newlines should not visibly appear at the selected line end.
+- An oversized unbreakable token may be clipped.
+
+Playback
+
+Play from the beginning
+
+Play starts from offset "0", clears any previous highlight, and begins reading the complete transcript.
+
+Pause
+
+Pause stops the current speech request while preserving the current displayed line and highlight.
+
+Resume
+
+Play while paused resumes from the beginning of the most recently active spoken range.
+
+For example, if the active range begins at global transcript offset "10", resume should speak:
+
+"transcript.substring(10)"
+
+Callbacks from resumed speech are relative to that substring and must be translated back to positions in the original transcript.
+
+For example:
+
+"resume offset = 10"
+"callback = [6, 9)"
+"original transcript range = [16, 19)"
+
+This must remain correct across multiple pause/resume cycles.
+
+If playback is paused before any valid range callback has been received, resume from the beginning of the current speech request.
+
+Repeating the current word/range when resuming is acceptable. Exact audio-level seeking is not required.
+
+Stop
+
+Stop must:
+
+- stop current speech;
+- clear the highlight;
+- reset playback position;
+- return to the first visual line.
+
+The next Play starts from the beginning of the full transcript.
+
+Completion or speech error should have the same reset behavior.
+
+Asynchronous callbacks
+
+Each speech request, including resumed requests, must use a unique utterance ID.
+
+Callbacks belonging to old playback requests must not modify current playback.
+
+This includes callbacks arriving after:
+
+- Pause / Resume;
+- Stop / Play;
+- completion or error;
+- transcript replacement.
+
+Speech callbacks may arrive asynchronously and from different threads. The implementation must remain safe under concurrent callback delivery.
+
+Do not use timers, sleeps, delays, or estimated word durations to simulate synchronization.
+
+Transcript changes
+
+If the supplied transcript changes while playing or paused:
+
+- stop current speech;
+- reset to the stopped state;
+- clear the current highlight and playback position;
+- display the first line of the new transcript;
+- do not automatically start the new transcript.
+
+Late callbacks from the previous transcript must have no effect.
+
+Recomposition with the same transcript must not restart or reset playback.
+
+Configuration changes
+
+Playback must survive Activity configuration changes such as screen rotation.
+
+Rotating while playing must preserve:
+
+- playback;
+- current highlight;
+- displayed line;
+- button state.
+
+Rotation must not stop playback or create another speech request. Subsequent speech callbacks must update the recreated UI.
+
+Rotating while paused must preserve the paused position and highlight, and Play must resume from the preserved position.
+
+Do not bypass Activity recreation using "android:configChanges".
+
+Process-death recovery, foreground/background playback, media sessions, and audio focus are out of scope.
+
+Starter Code
+
+"SpeechEngine.kt"
+
+package com.example.readaloud
+
+interface SpeechEngine {
+
+    fun speak(
+        text: String,
+        utteranceId: String,
+        listener: Listener,
+    )
+
+    fun stop()
+
+    fun shutdown()
+
+    interface Listener {
+
+        fun onStart(utteranceId: String)
+
+        fun onRangeStart(
+            utteranceId: String,
+            start: Int,
+            endExclusive: Int,
+        )
+
+        fun onDone(utteranceId: String)
+
+        fun onError(utteranceId: String)
+    }
+}
+
+"TranscriptScreen.kt"
+
+package com.example.readaloud
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+fun TranscriptScreen(
+    transcript: String,
+    modifier: Modifier = Modifier,
+) {
+    TODO("Implement")
+}
+
+"MainActivity.kt"
+
+package com.example.readaloud
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    TranscriptScreen(
+                        transcript = SAMPLE_TRANSCRIPT,
+                        modifier = Modifier.padding(24.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val SAMPLE_TRANSCRIPT =
+    "The quick brown fox jumps over the lazy dog. " +
+        "Jetpack Compose makes Android UI development declarative. " +
+        "This transcript should continue playing when the screen rotates."
+
+Test Cases
+
+The following are the key behavioral and edge-case tests.
+
+1. Pause → Resume offset translation
+
+Start playback and emit "[10, 15)". Pause, then Play.
+
+Verify playback resumes with "transcript.substring(10)".
+
+A callback "[6, 9)" from the resumed request must highlight original transcript range "[16, 19)".
+
+2. Multiple Pause / Resume cycles
+
+Perform at least three pause/resume cycles with different spoken ranges.
+
+Verify all positions remain relative to the original transcript and do not accumulate incorrect substring-relative offsets.
+
+3. Stale callbacks after Resume
+
+Play request A → receive range A → Pause → Play request B → receive range B.
+
+Then deliver late range, completion, and error callbacks from A.
+
+Verify none of them modify B's state or highlight.
+
+4. Pause vs Stop
+
+Verify Pause preserves the current highlight, displayed line, and resume position.
+
+Verify Stop clears them, resets playback to the beginning, and causes the next Play to speak the complete transcript.
+
+5. Repeated words
+
+Use:
+
+"go go go"
+
+Emit the offsets corresponding to the second "go".
+
+Verify the second occurrence is highlighted rather than locating the first matching word.
+
+6. Invalid ranges
+
+Establish a valid highlight, then send negative, empty, reversed, and out-of-bounds ranges.
+
+Verify there is no crash and the previous valid highlight remains unchanged.
+
+7. Terminal callback cannot resurrect playback
+
+Play → range → Done → late range.
+
+Repeat with Error.
+
+Verify playback remains stopped with no highlight after the terminal callback.
+
+8. Real Compose text layout
+
+Render text at different available widths and use proportional characters such as:
+
+"iiiiiiiiiiiiiiii WWWWWWWWWWWWWWWW"
+
+Verify visual-line selection follows actual Compose measurement rather than character or word counts.
+
+9. Range crossing a visual-line boundary
+
+Create a range beginning on line 1 and ending on line 2.
+
+Verify line 1 is displayed and only its intersection is highlighted.
+
+Then start a range exactly at the first character of line 2 and verify line 2 becomes visible.
+
+10. Rotation while playing
+
+Play → receive a range → recreate the Activity.
+
+Verify:
+
+- playback remains active;
+- highlight survives;
+- no additional "speak()" occurs;
+- rotation does not call "stop()".
+
+Deliver another range afterward and verify the recreated UI updates.
+
+11. Rotation while paused
+
+Play → receive range beginning at offset "N" → Pause → recreate Activity → Play.
+
+Verify paused state/highlight survive and playback resumes with "transcript.substring(N)".
+
+12. Transcript replacement
+
+Play transcript A → receive a range → Pause → replace with transcript B.
+
+Deliver late callbacks from A.
+
+Verify they have no effect. The next Play must speak the complete transcript B.
+
+13. Concurrent callback race
+
+Deliver current and stale range/completion/error callbacks concurrently from multiple threads.
+
+Verify:
+
+- no crashes or corrupted state;
+- stale sessions cannot overwrite the current session;
+- terminal sessions cannot be resurrected by late callbacks;
+- any published active range is valid.
+
+14. Visual contract
+
+Using Roborazzi or equivalent visual regression testing, verify the playing state has:
+
+- exactly two buttons;
+- "Pause" and "Stop" labels;
+- one visual transcript line;
+- horizontally centered transcript;
+- exactly "20sp" text;
+- spoken range foreground exactly "#FF9800";
+- no additional highlight styling.
+
+15. Highlighting does not reflow
+
+Capture the same transcript before and after highlighting a range near a wrapping boundary.
+
+Verify only foreground color changes. Character positions, wrapping, line boundaries, and text geometry must remain unchanged.
+
+
+
+------------------
+
+
 Read-Aloud Transcript — Android / Jetpack Compose Assignment
 Requirements
 Build a Jetpack Compose screen that reads a supplied transcript aloud and visually follows the currently spoken text.
