@@ -1,3 +1,1001 @@
+1. SpeechEngine.kt
+This is the provided starter interface and remains unchanged.
+package com.example.readaloud
+
+interface SpeechEngine {
+
+    fun speak(
+        text: String,
+        utteranceId: String,
+        listener: Listener,
+    )
+
+    fun stop()
+
+    fun shutdown()
+
+    interface Listener {
+        fun onStart(utteranceId: String)
+
+        fun onRangeStart(
+            utteranceId: String,
+            start: Int,
+            endExclusive: Int,
+        )
+
+        fun onDone(utteranceId: String)
+
+        fun onError(utteranceId: String)
+    }
+}
+2. AndroidSpeechEngine.kt
+The candidate adds the real Android implementation.
+package com.example.readaloud
+
+import android.content.Context
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import java.util.Locale
+
+class AndroidSpeechEngine(
+    context: Context,
+) : SpeechEngine {
+
+    private data class PendingRequest(
+        val text: String,
+        val utteranceId: String,
+        val listener: SpeechEngine.Listener,
+    )
+
+    private val lock = Any()
+
+    private var tts: TextToSpeech? = null
+    private var initialized = false
+    private var initializationFailed = false
+    private var shutdown = false
+
+    private var pendingRequest: PendingRequest? = null
+
+    /*
+     * There is only one logical playback request at a time.
+     * The ViewModel additionally validates every utterance ID.
+     */
+    private var listener: SpeechEngine.Listener? = null
+
+    init {
+        val engine = TextToSpeech(context.applicationContext) { status ->
+            handleInitialized(status)
+        }
+
+        synchronized(lock) {
+            if (!shutdown) {
+                tts = engine
+            }
+        }
+
+        engine.setOnUtteranceProgressListener(
+            object : UtteranceProgressListener() {
+
+                override fun onStart(utteranceId: String) {
+                    currentListener()?.onStart(utteranceId)
+                }
+
+                override fun onRangeStart(
+                    utteranceId: String,
+                    start: Int,
+                    end: Int,
+                    frame: Int,
+                ) {
+                    currentListener()?.onRangeStart(
+                        utteranceId,
+                        start,
+                        end,
+                    )
+                }
+
+                override fun onDone(utteranceId: String) {
+                    currentListener()?.onDone(utteranceId)
+                }
+
+                @Deprecated("Deprecated by Android")
+                override fun onError(utteranceId: String) {
+                    currentListener()?.onError(utteranceId)
+                }
+
+                override fun onError(
+                    utteranceId: String,
+                    errorCode: Int,
+                ) {
+                    currentListener()?.onError(utteranceId)
+                }
+            },
+        )
+    }
+
+    override fun speak(
+        text: String,
+        utteranceId: String,
+        listener: SpeechEngine.Listener,
+    ) {
+        val engine: TextToSpeech?
+
+        synchronized(lock) {
+            if (shutdown) {
+                listener.onError(utteranceId)
+                return
+            }
+
+            this.listener = listener
+
+            if (initializationFailed) {
+                listener.onError(utteranceId)
+                return
+            }
+
+            if (!initialized) {
+                pendingRequest = PendingRequest(
+                    text = text,
+                    utteranceId = utteranceId,
+                    listener = listener,
+                )
+                return
+            }
+
+            engine = tts
+        }
+
+        speakNow(
+            engine = engine,
+            text = text,
+            utteranceId = utteranceId,
+            listener = listener,
+        )
+    }
+
+    override fun stop() {
+        val engine: TextToSpeech?
+
+        synchronized(lock) {
+            pendingRequest = null
+            engine = tts
+        }
+
+        engine?.stop()
+    }
+
+    override fun shutdown() {
+        val engine: TextToSpeech?
+
+        synchronized(lock) {
+            if (shutdown) return
+
+            shutdown = true
+            pendingRequest = null
+            listener = null
+
+            engine = tts
+            tts = null
+        }
+
+        engine?.stop()
+        engine?.shutdown()
+    }
+
+    private fun handleInitialized(status: Int) {
+        var request: PendingRequest? = null
+        var engine: TextToSpeech? = null
+
+        synchronized(lock) {
+            if (shutdown) return
+
+            if (status == TextToSpeech.SUCCESS) {
+                initialized = true
+                engine = tts
+                engine?.language = Locale.getDefault()
+
+                request = pendingRequest
+                pendingRequest = null
+            } else {
+                initializationFailed = true
+
+                request = pendingRequest
+                pendingRequest = null
+            }
+        }
+
+        val pending = request ?: return
+
+        if (status == TextToSpeech.SUCCESS) {
+            speakNow(
+                engine = engine,
+                text = pending.text,
+                utteranceId = pending.utteranceId,
+                listener = pending.listener,
+            )
+        } else {
+            pending.listener.onError(pending.utteranceId)
+        }
+    }
+
+    private fun speakNow(
+        engine: TextToSpeech?,
+        text: String,
+        utteranceId: String,
+        listener: SpeechEngine.Listener,
+    ) {
+        if (engine == null) {
+            listener.onError(utteranceId)
+            return
+        }
+
+        val result = engine.speak(
+            text,
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            utteranceId,
+        )
+
+        if (result == TextToSpeech.ERROR) {
+            listener.onError(utteranceId)
+        }
+    }
+
+    private fun currentListener(): SpeechEngine.Listener? =
+        synchronized(lock) {
+            listener
+        }
+}
+onRangeStart() is API 26 and is only delivered when the installed TTS engine supplies range timing information. That's consistent with the assignment's rule that no timing-based fallback is required. �
+Android Developers +1
+3. ReadAloudViewModel.kt
+This is the important part of the solution.
+All callback-visible session state is protected by one lock. A session records both the exact string sent to TTS and where that substring begins in the original transcript.
+package com.example.readaloud
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
+
+enum class PlaybackState {
+    STOPPED,
+    PLAYING,
+    PAUSED,
+}
+
+data class ReadAloudState(
+    val transcript: String = "",
+    val playbackState: PlaybackState = PlaybackState.STOPPED,
+    val activeRange: IntRange? = null,
+    val resumeOffset: Int = 0,
+)
+
+private data class PlaybackSession(
+    val utteranceId: String,
+    val baseOffset: Int,
+    val spokenText: String,
+)
+
+class ReadAloudViewModel(
+    private val speechEngine: SpeechEngine,
+) : ViewModel() {
+
+    private val lock = Any()
+
+    private val _state =
+        MutableStateFlow(ReadAloudState())
+
+    val state: StateFlow<ReadAloudState> =
+        _state.asStateFlow()
+
+    private var session: PlaybackSession? = null
+
+    private val listener =
+        object : SpeechEngine.Listener {
+
+            override fun onStart(utteranceId: String) {
+                // PLAYING is entered when Play is pressed.
+            }
+
+            override fun onRangeStart(
+                utteranceId: String,
+                start: Int,
+                endExclusive: Int,
+            ) {
+                synchronized(lock) {
+                    val currentSession =
+                        session ?: return
+
+                    if (
+                        currentSession.utteranceId !=
+                        utteranceId
+                    ) {
+                        return
+                    }
+
+                    // Validate against the exact substring
+                    // supplied to this speak() request.
+                    if (start < 0) return
+                    if (start >= endExclusive) return
+
+                    if (
+                        endExclusive >
+                        currentSession.spokenText.length
+                    ) {
+                        return
+                    }
+
+                    val globalStart =
+                        currentSession.baseOffset + start
+
+                    val globalEndExclusive =
+                        currentSession.baseOffset +
+                            endExclusive
+
+                    _state.value =
+                        _state.value.copy(
+                            activeRange =
+                                globalStart until
+                                    globalEndExclusive,
+
+                            // Pause resumes from the beginning
+                            // of the currently spoken range.
+                            resumeOffset = globalStart,
+                        )
+                }
+            }
+
+            override fun onDone(utteranceId: String) {
+                finish(utteranceId)
+            }
+
+            override fun onError(utteranceId: String) {
+                finish(utteranceId)
+            }
+        }
+
+    fun setTranscript(transcript: String) {
+        var stopEngine = false
+
+        synchronized(lock) {
+            val current = _state.value
+
+            // Recomposition with the same transcript
+            // must do nothing.
+            if (current.transcript == transcript) {
+                return
+            }
+
+            stopEngine =
+                current.playbackState !=
+                    PlaybackState.STOPPED
+
+            // Invalidate first so callbacks racing with
+            // stop() cannot modify the new state.
+            session = null
+
+            _state.value =
+                ReadAloudState(
+                    transcript = transcript,
+                )
+        }
+
+        if (stopEngine) {
+            speechEngine.stop()
+        }
+    }
+
+    fun play() {
+        val request: PlaybackSession
+
+        synchronized(lock) {
+            val current = _state.value
+
+            if (current.transcript.isEmpty()) {
+                return
+            }
+
+            if (
+                current.playbackState ==
+                PlaybackState.PLAYING
+            ) {
+                return
+            }
+
+            val baseOffset =
+                when (current.playbackState) {
+                    PlaybackState.PAUSED ->
+                        current.resumeOffset
+
+                    PlaybackState.STOPPED ->
+                        0
+
+                    PlaybackState.PLAYING ->
+                        return
+                }
+
+            if (
+                baseOffset !in
+                0 until current.transcript.length
+            ) {
+                return
+            }
+
+            val spokenText =
+                current.transcript.substring(baseOffset)
+
+            request =
+                PlaybackSession(
+                    utteranceId =
+                        UUID.randomUUID().toString(),
+                    baseOffset = baseOffset,
+                    spokenText = spokenText,
+                )
+
+            /*
+             * Install the session BEFORE calling the
+             * external engine. A fake implementation can
+             * legally invoke callbacks synchronously.
+             */
+            session = request
+
+            _state.value =
+                current.copy(
+                    playbackState =
+                        PlaybackState.PLAYING,
+
+                    // Resume may keep the paused highlight
+                    // until the next valid callback.
+                    activeRange =
+                        if (
+                            current.playbackState ==
+                            PlaybackState.PAUSED
+                        ) {
+                            current.activeRange
+                        } else {
+                            null
+                        },
+
+                    // Also handles Pause before the first
+                    // range callback.
+                    resumeOffset = baseOffset,
+                )
+        }
+
+        speechEngine.speak(
+            text = request.spokenText,
+            utteranceId = request.utteranceId,
+            listener = listener,
+        )
+    }
+
+    fun pause() {
+        synchronized(lock) {
+            val current = _state.value
+
+            if (
+                current.playbackState !=
+                PlaybackState.PLAYING
+            ) {
+                return
+            }
+
+            /*
+             * Invalidate BEFORE stop(). stop() can cause
+             * asynchronous terminal callbacks.
+             */
+            session = null
+
+            _state.value =
+                current.copy(
+                    playbackState =
+                        PlaybackState.PAUSED,
+                )
+        }
+
+        speechEngine.stop()
+    }
+
+    fun stop() {
+        val shouldStop: Boolean
+
+        synchronized(lock) {
+            val current = _state.value
+
+            if (
+                current.playbackState ==
+                PlaybackState.STOPPED
+            ) {
+                return
+            }
+
+            shouldStop = true
+
+            session = null
+
+            _state.value =
+                current.copy(
+                    playbackState =
+                        PlaybackState.STOPPED,
+                    activeRange = null,
+                    resumeOffset = 0,
+                )
+        }
+
+        if (shouldStop) {
+            speechEngine.stop()
+        }
+    }
+
+    private fun finish(utteranceId: String) {
+        synchronized(lock) {
+            val currentSession =
+                session ?: return
+
+            if (
+                currentSession.utteranceId !=
+                utteranceId
+            ) {
+                return
+            }
+
+            session = null
+
+            _state.value =
+                _state.value.copy(
+                    playbackState =
+                        PlaybackState.STOPPED,
+                    activeRange = null,
+                    resumeOffset = 0,
+                )
+        }
+    }
+
+    override fun onCleared() {
+        val stopEngine =
+            synchronized(lock) {
+                val active =
+                    _state.value.playbackState !=
+                        PlaybackState.STOPPED
+
+                session = null
+                active
+            }
+
+        if (stopEngine) {
+            speechEngine.stop()
+        }
+
+        speechEngine.shutdown()
+    }
+}
+The ViewModel is appropriate here because Android retains a ViewModel across Activity configuration recreation and only calls onCleared() when that retained owner is actually discarded. �
+Android Developers +1
+4. ReadAloudViewModelFactory.kt
+Crucially, the SpeechEngine is created inside create(). Therefore, recreating the Activity does not construct another engine when Android reattaches the retained ViewModel.
+package com.example.readaloud
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+
+class ReadAloudViewModelFactory(
+    private val createSpeechEngine: () -> SpeechEngine,
+) : ViewModelProvider.Factory {
+
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(
+        modelClass: Class<T>,
+    ): T {
+        require(
+            modelClass.isAssignableFrom(
+                ReadAloudViewModel::class.java,
+            ),
+        )
+
+        return ReadAloudViewModel(
+            speechEngine = createSpeechEngine(),
+        ) as T
+    }
+}
+5. TranscriptScreen.kt
+The candidate is allowed to add parameters to the supplied screen, so the reference adds the ViewModel.
+package com.example.readaloud
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+private val SpokenWordOrange =
+    Color(0xFFFF9800)
+
+private val TranscriptTextStyle =
+    TextStyle(
+        fontSize = 20.sp,
+        textAlign = TextAlign.Center,
+    )
+
+private data class VisibleLine(
+    val text: String,
+    val sourceStart: Int,
+    val sourceEndExclusive: Int,
+)
+
+@Composable
+fun TranscriptScreen(
+    transcript: String,
+    viewModel: ReadAloudViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val state by viewModel.state.collectAsState()
+
+    /*
+     * Same transcript -> ViewModel performs no reset.
+     * New transcript -> existing playback is invalidated.
+     */
+    LaunchedEffect(viewModel, transcript) {
+        viewModel.setTranscript(transcript)
+    }
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            horizontalArrangement =
+                Arrangement.spacedBy(12.dp),
+        ) {
+            Button(
+                enabled = transcript.isNotEmpty(),
+                onClick = {
+                    when (state.playbackState) {
+                        PlaybackState.PLAYING ->
+                            viewModel.pause()
+
+                        PlaybackState.PAUSED,
+                        PlaybackState.STOPPED ->
+                            viewModel.play()
+                    }
+                },
+            ) {
+                Text(
+                    if (
+                        state.playbackState ==
+                        PlaybackState.PLAYING
+                    ) {
+                        "Pause"
+                    } else {
+                        "Play"
+                    },
+                )
+            }
+
+            Button(
+                enabled =
+                    transcript.isNotEmpty() &&
+                        state.playbackState !=
+                        PlaybackState.STOPPED,
+                onClick = viewModel::stop,
+            ) {
+                Text("Stop")
+            }
+        }
+
+        if (transcript.isNotEmpty()) {
+            TranscriptLine(
+                transcript = transcript,
+                activeRange = state.activeRange,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 24.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TranscriptLine(
+    transcript: String,
+    activeRange: IntRange?,
+    modifier: Modifier = Modifier,
+) {
+    val textMeasurer = rememberTextMeasurer()
+
+    var availableWidthPx by remember {
+        mutableIntStateOf(0)
+    }
+
+    Box(
+        modifier =
+            modifier
+                .clipToBounds()
+                .onSizeChanged {
+                    availableWidthPx = it.width
+                },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (availableWidthPx == 0) {
+            return@Box
+        }
+
+        /*
+         * Measure the COMPLETE transcript with the actual
+         * Compose text engine and actual available width.
+         */
+        val layout =
+            textMeasurer.measure(
+                text = AnnotatedString(transcript),
+                style = TranscriptTextStyle,
+                softWrap = true,
+                overflow = TextOverflow.Clip,
+                constraints =
+                    Constraints(
+                        maxWidth = availableWidthPx,
+                    ),
+            )
+
+        val visibleLine =
+            visibleLineFor(
+                transcript = transcript,
+                activeRange = activeRange,
+                layout = layout,
+            )
+
+        val highlight =
+            localHighlightRange(
+                line = visibleLine,
+                activeRange = activeRange,
+            )
+
+        val annotatedLine =
+            buildAnnotatedString {
+                if (highlight == null) {
+                    append(visibleLine.text)
+                    return@buildAnnotatedString
+                }
+
+                append(
+                    visibleLine.text.substring(
+                        0,
+                        highlight.first,
+                    ),
+                )
+
+                withStyle(
+                    SpanStyle(
+                        color = SpokenWordOrange,
+                    ),
+                ) {
+                    append(
+                        visibleLine.text.substring(
+                            highlight.first,
+                            highlight.last + 1,
+                        ),
+                    )
+                }
+
+                append(
+                    visibleLine.text.substring(
+                        highlight.last + 1,
+                    ),
+                )
+            }
+
+        Text(
+            text = annotatedLine,
+            modifier = Modifier.fillMaxWidth(),
+            style = TranscriptTextStyle,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+        )
+    }
+}
+
+private fun visibleLineFor(
+    transcript: String,
+    activeRange: IntRange?,
+    layout: TextLayoutResult,
+): VisibleLine {
+    if (
+        transcript.isEmpty() ||
+        layout.lineCount == 0
+    ) {
+        return VisibleLine(
+            text = "",
+            sourceStart = 0,
+            sourceEndExclusive = 0,
+        )
+    }
+
+    val targetOffset =
+        activeRange
+            ?.first
+            ?.coerceIn(
+                minimumValue = 0,
+                maximumValue =
+                    transcript.length - 1,
+            )
+            ?: 0
+
+    val lineIndex =
+        layout.getLineForOffset(targetOffset)
+
+    val lineStart =
+        layout.getLineStart(lineIndex)
+
+    /*
+     * visibleEnd=true removes trailing whitespace and
+     * line-feed characters from the displayed line.
+     */
+    val lineEnd =
+        layout.getLineEnd(
+            lineIndex = lineIndex,
+            visibleEnd = true,
+        )
+
+    return VisibleLine(
+        text =
+            transcript.substring(
+                lineStart,
+                lineEnd,
+            ),
+        sourceStart = lineStart,
+        sourceEndExclusive = lineEnd,
+    )
+}
+
+private fun localHighlightRange(
+    line: VisibleLine,
+    activeRange: IntRange?,
+): IntRange? {
+    activeRange ?: return null
+
+    val activeStart =
+        activeRange.first
+
+    val activeEndExclusive =
+        activeRange.last + 1
+
+    val intersectionStart =
+        maxOf(
+            activeStart,
+            line.sourceStart,
+        )
+
+    val intersectionEndExclusive =
+        minOf(
+            activeEndExclusive,
+            line.sourceEndExclusive,
+        )
+
+    if (
+        intersectionStart >=
+        intersectionEndExclusive
+    ) {
+        return null
+    }
+
+    val localStart =
+        intersectionStart -
+            line.sourceStart
+
+    val localEndExclusive =
+        intersectionEndExclusive -
+            line.sourceStart
+
+    return localStart until localEndExclusive
+}
+This is based on actual Compose layout. getLineForOffset() identifies the visual line, while getLineEnd(..., visibleEnd = true) explicitly excludes trailing whitespace and line-feed characters. �
+Android Developers
+The highlight uses only SpanStyle(color = ...), so it doesn't alter font size, weight, spacing, or other layout-affecting properties.
+6. MainActivity.kt
+This replaces the starter implementation.
+package com.example.readaloud
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+class MainActivity : ComponentActivity() {
+
+    private val viewModel: ReadAloudViewModel by viewModels {
+        ReadAloudViewModelFactory {
+            AndroidSpeechEngine(
+                applicationContext,
+            )
+        }
+    }
+
+    override fun onCreate(
+        savedInstanceState: Bundle?,
+    ) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier =
+                        Modifier.fillMaxSize(),
+                ) {
+                    TranscriptScreen(
+                        transcript =
+                            SAMPLE_TRANSCRIPT,
+                        viewModel = viewModel,
+                        modifier =
+                            Modifier.padding(24.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val SAMPLE_TRANSCRIPT =
+    "The quick brown fox jumps over the lazy dog. " +
+        "Jetpack Compose makes Android UI development declarative. " +
+        "This transcript should continue playing when the screen rotates."
+There is intentionally no onDestroy { stop() } and no Compose DisposableEffect { stop() }. A configuration change destroys the Activity/composition, but Android retains and attaches the existing ViewModel to the new Activity. �
+Android Developers +1
+7. Manifest requirement
+Because the implementation uses Android TTS, apps targeting Android 11+ should include the TTS service query documented by Android. �
+Android Developers
+<manifest ...>
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <application ...>
+        ...
+    </application>
+
+</manifest>
+Do not add android:configChanges to bypass Activity recreation.
+
+
+
+
+
 AndroidSpeechEngine     ← implement SpeechEngine
 ReadAloudViewModel      ← playback/session/lifecycle state
 supporting UI/layout    ← line measurement + highlighting
