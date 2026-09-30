@@ -1,1 +1,543 @@
+Offline Concurrent Streaming Morse Decoder
+Context
+You are implementing an offline Morse decoder. The decoder receives chunks of boolean signal samples from any thread. true means tone is on. false means silence.
+Chunks are analyzed on background worker threads. Worker results may finish out of order. The decoder must commit analyzed chunks safely, merge runs across chunk boundaries, and expose decoded text from the longest contiguous analyzed prefix of the signal.
+The hard part is concurrency correctness: chunks can arrive out of order, worker jobs can finish out of order, clear() and setTiming() can happen while jobs are running, symbols can cross chunk boundaries, and snapshots must never block on workers.
+Task
+Implement ConcurrentMorseDecoder.
+Starter Code
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
+class ConcurrentMorseDecoder(
+    private val analysisExecutor: Executor = Executors.newFixedThreadPool(2)
+) {
+    fun appendSamples(startSampleIndex: Long, samples: BooleanArray) {
+        TODO("Implement")
+    }
+
+    fun setTiming(samplesPerDit: Int, tolerancePercent: Int = 30) {
+        TODO("Implement")
+    }
+
+    fun clear() {
+        TODO("Implement")
+    }
+
+    fun decodedText(): String {
+        TODO("Implement")
+    }
+
+    fun debugState(): MorseDebugState {
+        TODO("Implement")
+    }
+}
+
+data class MorseDebugState(
+    val generation: Long,
+    val samplesPerDit: Int,
+    val tolerancePercent: Int,
+    val pendingChunks: Set<Long>,
+    val committedChunks: Set<Long>,
+    val decodedText: String,
+    val contiguousCommittedUntil: Long
+)
+Requirements
+Use plain Kotlin/JVM and JDK concurrency primitives only. Do not use Android APIs, coroutines, RxJava, network, microphone, audio APIs, or third-party libraries.
+Public methods may be called from any thread and must be thread-safe.
+appendSamples(startSampleIndex, samples) requires startSampleIndex >= 0; otherwise throw IllegalArgumentException. Empty sample arrays are no-ops after validating startSampleIndex.
+appendSamples must copy the input BooleanArray before returning. Mutating the caller’s array after append must not affect decoding.
+Each appended chunk covers the half-open range [startSampleIndex, startSampleIndex + samples.size). Range overflow must throw IllegalArgumentException.
+Chunks may arrive out of order, but overlapping chunks in the current generation must be rejected with IllegalArgumentException. Adjacent chunks are allowed.
+Each append schedules background analysis for that chunk. Analysis converts the copied samples into tone/silence runs, but decoded text must be derived only after committing analyzed chunks under synchronization.
+Worker results may finish out of order. A later chunk may be committed internally before an earlier chunk, but decoded output may only use the longest contiguous committed prefix starting at sample index 0.
+Tone or silence runs crossing adjacent chunk boundaries must be merged before Morse classification.
+setTiming(samplesPerDit, tolerancePercent) requires samplesPerDit > 0 and tolerancePercent in 0..49; otherwise throw IllegalArgumentException.
+Calling setTiming increments the generation, clears pending chunks, committed chunks, reserved ranges, partial runs, and decoded output. Old worker results from previous generations must be ignored.
+clear() increments the generation, clears pending chunks, committed chunks, reserved ranges, partial runs, and decoded output. Old worker results must not repopulate state.
+Morse timing uses samplesPerDit as one unit. Tone lengths within tolerance of 1 unit decode as .. Tone lengths within tolerance of 3 units decode as -. Other tone lengths make the current Morse character invalid.
+The inclusive accepted tone range for n units is:
+lower = ceil(n * samplesPerDit * (100 - tolerancePercent) / 100)
+upper = floor(n * samplesPerDit * (100 + tolerancePercent) / 100)
+Silence gaps use lower-bound separators. A silence run shorter than the accepted lower bound for 3 units is an intra-character gap. A silence run greater than or equal to the accepted lower bound for 3 units but shorter than the accepted lower bound for 7 units is a letter gap. A silence run greater than or equal to the accepted lower bound for 7 units is a word gap.
+A character is emitted only after a letter gap or word gap. A trailing tone run or only an intra-character gap at the end of the current contiguous prefix must not emit a character yet.
+A word gap finalizes the current character, if any, and emits at most one space. Do not emit leading duplicate spaces.
+Unknown Morse patterns decode as '?'. A character containing any invalid tone run also decodes as '?'.
+decodedText() returns a stable snapshot immediately. It must not wait for workers, schedule work, or mutate state.
+debugState() returns a stable snapshot immediately. It must not wait for workers, schedule work, mutate state, or expose mutable internal collections.
+The implementation must not deadlock under concurrent appendSamples, setTiming, clear, decodedText, debugState, and out-of-order worker completions.
+Tests
+Invalid inputs
+Verify negative startSampleIndex, overflowing chunk range, invalid samplesPerDit, and invalid tolerancePercent throw IllegalArgumentException.
+Input array is copied
+Append a chunk, mutate the original BooleanArray, complete the worker job, and verify decoding uses the original copied values.
+Overlap rejected atomically
+Append [0, 10), then try [5, 15) and [0, 10) again. Verify both overlapping appends throw. Verify [10, 20) is accepted.
+Simple SOS decode
+With samplesPerDit = 2, append chunks encoding ... --- ... with valid letter gaps and a trailing letter gap. Verify decodedText() is "SOS".
+Out-of-order append
+Append the later half of a message before the earlier half. Complete workers in append order. Verify decoded output appears only after the prefix from sample 0 is committed.
+Out-of-order worker completion
+Append chunks [0, n), [n, 2n), and [2n, 3n). Complete workers in order chunk 2, chunk 0, chunk 1. Verify final decoded text is timeline ordered.
+Tone run crosses chunk boundary
+Split a dah tone across two adjacent chunks. Verify the merged tone decodes as -, not two separate dits or an invalid character.
+Silence run crosses chunk boundary
+Split a letter gap across two chunks. Verify the character is not emitted before the full gap is committed, and is emitted after the gap becomes long enough.
+Word gap crosses chunk boundary
+Split a 7-unit word gap across chunks. Verify exactly one space is emitted after the word gap is fully visible.
+Partial symbol not finalized
+Append a valid dit tone with no following letter or word gap. Complete analysis and verify decodedText() remains empty.
+Intra-character gap does not finalize
+Append dot + 1-unit silence + dot with no letter gap. Verify no character is emitted until a later letter gap arrives.
+Unknown Morse pattern
+Append a valid but unmapped pattern such as ...... followed by a letter gap. Verify it decodes as "?".
+Invalid tone length becomes unknown character
+Append a tone length outside both dit and dah tolerance, followed by a letter gap. Verify it emits "?".
+Tolerance boundaries
+With samplesPerDit = 10 and tolerancePercent = 30, verify tone lengths at the accepted lower and upper boundaries decode correctly, and lengths just outside decode as invalid.
+Gap threshold boundaries
+Verify gaps just below the 3-unit lower bound are intra-character, gaps at the 3-unit lower bound are letter gaps, and gaps at the 7-unit lower bound are word gaps.
+Clear rejects stale workers
+Append chunks, do not complete workers, call clear(), then complete old workers. Verify decoded text remains empty and committed chunks stay empty.
+Timing change rejects stale workers
+Append chunks under one timing config, call setTiming, then complete old workers. Verify old results do not commit.
+New data after clear starts from index 0
+Append and clear. Then append a new chunk starting at 0, complete it, and verify decoding works from a fresh generation.
+Gap in committed chunks stops decoding
+Commit chunks [0, 10) and [20, 30) while [10, 20) is missing. Verify decoded output only uses the prefix ending at 10.
+decodedText snapshot safety
+Call decodedText() while workers are pending and blocked. Verify it returns immediately and does not change pending or committed state.
+debugState snapshot safety
+Call debugState() while workers are pending. Mutate the returned sets if the language permits copying through casts should not affect decoder state; normally verify returned collections are independent snapshots.
+Concurrent stress
+Randomly interleave appends, adjacent chunks, out-of-order completions, setTiming, clear, decodedText, and debugState. Verify no deadlocks, no stale commits, no duplicate characters, and no overlapping accepted ranges.
+Reference Solution
+import java.util.TreeMap
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+
+class ConcurrentMorseDecoder(
+    private val analysisExecutor: Executor = Executors.newFixedThreadPool(2)
+) {
+    private val lock = Any()
+
+    private var generation: Long = 0L
+    private var samplesPerDit: Int = 10
+    private var tolerancePercent: Int = 30
+
+    private val reservedRanges = TreeMap<Long, Long>()
+    private val pendingStarts = LinkedHashSet<Long>()
+    private val committedChunks = TreeMap<Long, ChunkAnalysis>()
+
+    private var decoded: String = ""
+    private var contiguousCommittedUntil: Long = 0L
+
+    fun appendSamples(startSampleIndex: Long, samples: BooleanArray) {
+        require(startSampleIndex >= 0) {
+            "startSampleIndex must be >= 0"
+        }
+
+        if (samples.isEmpty()) return
+
+        val size = samples.size.toLong()
+
+        require(startSampleIndex <= Long.MAX_VALUE - size) {
+            "chunk range overflows Long"
+        }
+
+        val endSampleIndex = startSampleIndex + size
+        val copied = samples.copyOf()
+
+        val job = synchronized(lock) {
+            rejectOverlapLocked(startSampleIndex, endSampleIndex)
+
+            reservedRanges[startSampleIndex] = endSampleIndex
+            pendingStarts.add(startSampleIndex)
+
+            AnalysisJob(
+                generation = generation,
+                start = startSampleIndex,
+                end = endSampleIndex,
+                samples = copied,
+                samplesPerDit = samplesPerDit,
+                tolerancePercent = tolerancePercent
+            )
+        }
+
+        try {
+            analysisExecutor.execute {
+                val result = analyzeChunk(job)
+                commitAnalysis(job, result)
+            }
+        } catch (t: RuntimeException) {
+            synchronized(lock) {
+                if (job.generation == generation) {
+                    pendingStarts.remove(job.start)
+                    reservedRanges.remove(job.start)
+                    recomputeDecodedLocked()
+                }
+            }
+            throw t
+        }
+    }
+
+    fun setTiming(samplesPerDit: Int, tolerancePercent: Int) {
+        require(samplesPerDit > 0) {
+            "samplesPerDit must be > 0"
+        }
+        require(tolerancePercent in 0..49) {
+            "tolerancePercent must be in 0..49"
+        }
+
+        synchronized(lock) {
+            this.samplesPerDit = samplesPerDit
+            this.tolerancePercent = tolerancePercent
+
+            generation++
+            reservedRanges.clear()
+            pendingStarts.clear()
+            committedChunks.clear()
+            decoded = ""
+            contiguousCommittedUntil = 0L
+        }
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            generation++
+            reservedRanges.clear()
+            pendingStarts.clear()
+            committedChunks.clear()
+            decoded = ""
+            contiguousCommittedUntil = 0L
+        }
+    }
+
+    fun decodedText(): String {
+        return synchronized(lock) {
+            decoded
+        }
+    }
+
+    fun debugState(): MorseDebugState {
+        return synchronized(lock) {
+            MorseDebugState(
+                generation = generation,
+                samplesPerDit = samplesPerDit,
+                tolerancePercent = tolerancePercent,
+                pendingChunks = pendingStarts.toSet(),
+                committedChunks = committedChunks.keys.toSet(),
+                decodedText = decoded,
+                contiguousCommittedUntil = contiguousCommittedUntil
+            )
+        }
+    }
+
+    private fun rejectOverlapLocked(start: Long, end: Long) {
+        val previous = reservedRanges.floorEntry(start)
+        if (previous != null && previous.value > start) {
+            throw IllegalArgumentException("chunk overlaps existing range")
+        }
+
+        val next = reservedRanges.ceilingEntry(start)
+        if (next != null && next.key < end) {
+            throw IllegalArgumentException("chunk overlaps existing range")
+        }
+    }
+
+    private fun analyzeChunk(job: AnalysisJob): ChunkAnalysis {
+        val runs = ArrayList<SignalRun>()
+
+        if (job.samples.isNotEmpty()) {
+            var currentValue = job.samples[0]
+            var runStartOffset = 0
+
+            for (index in 1 until job.samples.size) {
+                val value = job.samples[index]
+                if (value != currentValue) {
+                    runs.add(
+                        SignalRun(
+                            value = currentValue,
+                            start = job.start + runStartOffset.toLong(),
+                            end = job.start + index.toLong()
+                        )
+                    )
+                    currentValue = value
+                    runStartOffset = index
+                }
+            }
+
+            runs.add(
+                SignalRun(
+                    value = currentValue,
+                    start = job.start + runStartOffset.toLong(),
+                    end = job.end
+                )
+            )
+        }
+
+        return ChunkAnalysis(
+            start = job.start,
+            end = job.end,
+            runs = runs
+        )
+    }
+
+    private fun commitAnalysis(job: AnalysisJob, result: ChunkAnalysis) {
+        synchronized(lock) {
+            if (job.generation != generation) return
+            if (job.samplesPerDit != samplesPerDit) return
+            if (job.tolerancePercent != tolerancePercent) return
+            if (!pendingStarts.remove(job.start)) return
+
+            committedChunks[job.start] = result
+            recomputeDecodedLocked()
+        }
+    }
+
+    private fun recomputeDecodedLocked() {
+        val mergedRuns = ArrayList<SignalRun>()
+        var expectedStart = 0L
+
+        for ((chunkStart, chunk) in committedChunks) {
+            if (chunkStart != expectedStart) break
+
+            for (run in chunk.runs) {
+                if (run.length <= 0L) continue
+
+                val lastIndex = mergedRuns.lastIndex
+                if (
+                    lastIndex >= 0 &&
+                    mergedRuns[lastIndex].value == run.value &&
+                    mergedRuns[lastIndex].end == run.start
+                ) {
+                    val previous = mergedRuns[lastIndex]
+                    mergedRuns[lastIndex] = SignalRun(
+                        value = previous.value,
+                        start = previous.start,
+                        end = run.end
+                    )
+                } else {
+                    mergedRuns.add(run)
+                }
+            }
+
+            expectedStart = chunk.end
+        }
+
+        contiguousCommittedUntil = expectedStart
+        decoded = decodeRuns(mergedRuns, samplesPerDit, tolerancePercent)
+    }
+
+    private fun decodeRuns(
+        runs: List<SignalRun>,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): String {
+        val output = StringBuilder()
+        val pattern = StringBuilder()
+        var invalidCurrentCharacter = false
+
+        fun finalizeCharacter() {
+            if (pattern.isEmpty() && !invalidCurrentCharacter) return
+
+            val character =
+                if (invalidCurrentCharacter) {
+                    '?'
+                } else {
+                    MORSE_TABLE[pattern.toString()] ?: '?'
+                }
+
+            output.append(character)
+            pattern.clear()
+            invalidCurrentCharacter = false
+        }
+
+        fun emitWordGap() {
+            finalizeCharacter()
+
+            if (output.isNotEmpty() && output.last() != ' ') {
+                output.append(' ')
+            }
+        }
+
+        for (run in runs) {
+            if (run.value) {
+                when (classifyTone(run.length, samplesPerDit, tolerancePercent)) {
+                    ToneKind.Dit -> pattern.append('.')
+                    ToneKind.Dah -> pattern.append('-')
+                    null -> invalidCurrentCharacter = true
+                }
+            } else {
+                when (classifyGap(run.length, samplesPerDit, tolerancePercent)) {
+                    GapKind.IntraCharacter -> {
+                        // The current Morse character continues.
+                    }
+
+                    GapKind.Letter -> {
+                        finalizeCharacter()
+                    }
+
+                    GapKind.Word -> {
+                        emitWordGap()
+                    }
+                }
+            }
+        }
+
+        return output.toString()
+    }
+
+    private fun classifyTone(
+        length: Long,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): ToneKind? {
+        return when {
+            isWithinToneRange(length, 1, samplesPerDit, tolerancePercent) -> ToneKind.Dit
+            isWithinToneRange(length, 3, samplesPerDit, tolerancePercent) -> ToneKind.Dah
+            else -> null
+        }
+    }
+
+    private fun classifyGap(
+        length: Long,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): GapKind {
+        val letterLower = lowerBound(3, samplesPerDit, tolerancePercent)
+        val wordLower = lowerBound(7, samplesPerDit, tolerancePercent)
+
+        return when {
+            length >= wordLower -> GapKind.Word
+            length >= letterLower -> GapKind.Letter
+            else -> GapKind.IntraCharacter
+        }
+    }
+
+    private fun isWithinToneRange(
+        length: Long,
+        units: Int,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): Boolean {
+        val lower = lowerBound(units, samplesPerDit, tolerancePercent)
+        val upper = upperBound(units, samplesPerDit, tolerancePercent)
+        return length in lower..upper
+    }
+
+    private fun lowerBound(
+        units: Int,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): Long {
+        return ceil(
+            units.toDouble() *
+                samplesPerDit.toDouble() *
+                (100.0 - tolerancePercent.toDouble()) /
+                100.0
+        ).toLong().coerceAtLeast(1L)
+    }
+
+    private fun upperBound(
+        units: Int,
+        samplesPerDit: Int,
+        tolerancePercent: Int
+    ): Long {
+        return floor(
+            units.toDouble() *
+                samplesPerDit.toDouble() *
+                (100.0 + tolerancePercent.toDouble()) /
+                100.0
+        ).toLong().coerceAtLeast(1L)
+    }
+
+    private data class AnalysisJob(
+        val generation: Long,
+        val start: Long,
+        val end: Long,
+        val samples: BooleanArray,
+        val samplesPerDit: Int,
+        val tolerancePercent: Int
+    )
+
+    private data class ChunkAnalysis(
+        val start: Long,
+        val end: Long,
+        val runs: List<SignalRun>
+    )
+
+    private data class SignalRun(
+        val value: Boolean,
+        val start: Long,
+        val end: Long
+    ) {
+        val length: Long
+            get() = end - start
+    }
+
+    private enum class ToneKind {
+        Dit,
+        Dah
+    }
+
+    private enum class GapKind {
+        IntraCharacter,
+        Letter,
+        Word
+    }
+
+    companion object {
+        private val MORSE_TABLE: Map<String, Char> = mapOf(
+            ".-" to 'A',
+            "-..." to 'B',
+            "-.-." to 'C',
+            "-.." to 'D',
+            "." to 'E',
+            "..-." to 'F',
+            "--." to 'G',
+            "...." to 'H',
+            ".." to 'I',
+            ".---" to 'J',
+            "-.-" to 'K',
+            ".-.." to 'L',
+            "--" to 'M',
+            "-." to 'N',
+            "---" to 'O',
+            ".--." to 'P',
+            "--.-" to 'Q',
+            ".-." to 'R',
+            "..." to 'S',
+            "-" to 'T',
+            "..-" to 'U',
+            "...-" to 'V',
+            ".--" to 'W',
+            "-..-" to 'X',
+            "-.--" to 'Y',
+            "--.." to 'Z',
+            "-----" to '0',
+            ".----" to '1',
+            "..---" to '2',
+            "...--" to '3',
+            "....-" to '4',
+            "....." to '5',
+            "-...." to '6',
+            "--..." to '7',
+            "---.." to '8',
+            "----." to '9'
+        )
+    }
+}
+
+data class MorseDebugState(
+    val generation: Long,
+    val samplesPerDit: Int,
+    val tolerancePercent: Int,
+    val pendingChunks: Set<Long>,
+    val committedChunks: Set<Long>,
+    val decodedText: String,
+    val contiguousCommittedUntil: Long
+)
