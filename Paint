@@ -1,3 +1,19 @@
+16. The composable must not block waiting for raster jobs. When composed at a positive pixel size, it schedules missing visible tiles before prefetch tiles. Prefetch tiles are the one-tile ring around the visible tile rectangle, excluding visible tiles. Within each group, tiles are submitted in row-major order: top to bottom, then left to right.
+
+
+
+I would also tighten Test 13 slightly:
+13. Visible before prefetch priority — Compose UI test on Robolectric
+Compose at a size with visible tiles and a prefetch ring. Verify submittedTileKeys exactly equals all missing visible tiles in row-major order followed by all missing prefetch-ring tiles in row-major order.
+One more possible issue: if cache tests assert exact eviction order when multiple tiles have equal LRU age, add a tie-breaker to Requirement 20:
+When multiple non-visible tiles have the same LRU age, evict them in row-major order.
+
+
+
+
+
+
+
 Compose Concurrent Vector Stroke Tile Renderer
 Context
 A Jetpack Compose drawing surface renders an infinite vector scene made of user strokes. Strokes can be created, appended point-by-point, ended, removed, restyled, undone/redone, and cleared.
