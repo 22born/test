@@ -1,1 +1,1379 @@
+Compose Concurrent Vector Stroke Tile Renderer
+Context
+A Jetpack Compose drawing surface renders an infinite vector scene made of user strokes. Strokes can be created, appended point-by-point, ended, removed, restyled, undone/redone, and cleared.
+Rendering is tile-based. Each 256 x 256 screen-space tile is rasterized on a background thread, then committed later for drawing. The UI must never block waiting for raster jobs.
+The hard part is concurrency correctness: raster jobs may finish out of order, strokes may mutate while jobs are running, viewport changes invalidate all tile work, undo/redo can restore or remove strokes, stale raster results must be rejected, and unaffected pending/committed tiles must survive dirty-only stroke edits.
+Task
+Implement ConcurrentStrokeCanvas and StrokeCanvasState.
+
+Starter Code
+
+import android.graphics.Bitmap
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.ui.Modifier
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+
+@Composable
+fun ConcurrentStrokeCanvas(
+    state: StrokeCanvasState,
+    modifier: Modifier = Modifier
+) {
+    TODO("Implement")
+}
+
+@Stable
+class StrokeCanvasState(
+    private val rasterExecutor: Executor = Executors.newFixedThreadPool(2),
+    private val maxCachedTiles: Int = 128
+) {
+    fun setViewport(scale: Float, offsetX: Float, offsetY: Float) {
+        TODO("Implement")
+    }
+
+    fun beginStroke(strokeId: String, color: Int, widthPx: Float) {
+        TODO("Implement")
+    }
+
+    fun appendPoints(strokeId: String, points: List<StrokePoint>) {
+        TODO("Implement")
+    }
+
+    fun endStroke(strokeId: String) {
+        TODO("Implement")
+    }
+
+    fun removeStroke(strokeId: String) {
+        TODO("Implement")
+    }
+
+    fun restyleStroke(strokeId: String, color: Int, widthPx: Float) {
+        TODO("Implement")
+    }
+
+    fun undo() {
+        TODO("Implement")
+    }
+
+    fun redo() {
+        TODO("Implement")
+    }
+
+    fun clear() {
+        TODO("Implement")
+    }
+
+    fun renderSnapshot(width: Int, height: Int): Bitmap {
+        TODO("Implement")
+    }
+
+    fun debugState(): StrokeCanvasDebugState {
+        TODO("Implement")
+    }
+}
+
+data class StrokePoint(
+    val x: Float,
+    val y: Float,
+    val pressure: Float = 1f
+)
+
+data class TileKey(
+    val x: Int,
+    val y: Int
+)
+
+data class StrokeCanvasDebugState(
+    val sceneGeneration: Long,
+    val viewportGeneration: Long,
+    val committedTiles: Set<TileKey>,
+    val pendingTiles: Set<TileKey>,
+    val activeStrokeIds: Set<String>,
+    val mainThreadId: Long,
+    val commitThreadIds: List<Long>,
+    val submittedJobCount: Long,
+    val submittedTileKeys: List<TileKey>,
+    val rejectedCommitCount: Long,
+    val evictedTiles: List<TileKey>
+)
+
+
+Requirements
+Use Jetpack Compose Canvas, Android Bitmap/Canvas for snapshots, Kotlin standard library, and JDK concurrency primitives only. Do not use Android View, TextureView, SurfaceView, RenderThread, coroutines, RxJava, or third-party rendering libraries.
+The constructor must throw IllegalArgumentException if maxCachedTiles <= 0. Public methods may be called from any thread. Tile commits and Compose-observed state mutations must happen on the main thread.
+Tiles are fixed 256 x 256 screen pixels. Tile (0, 0) covers [0, 256) x [0, 256). Tile (1, 0) covers [256, 512) x [0, 256). Negative tile coordinates are allowed for prefetching.
+The viewport transform is:
+screenX = (sceneX - offsetX) * scale
+screenY = (sceneY - offsetY) * scale
+setViewport requires finite scale > 0 and finite offsets. Invalid values throw IllegalArgumentException.
+A viewport change invalidates all pending and committed tiles. Old raster results from previous viewport generations must not commit.
+beginStroke requires non-empty strokeId and finite widthPx > 0; otherwise throw IllegalArgumentException. Duplicate active stroke IDs are rejected. Strokes render in begin order.
+Each stroke has a monotonically increasing revision. The first begin for an ID creates revision 0; reusing a previously removed ID creates a revision greater than any previous revision for that ID. appendPoints, endStroke, removeStroke, and restyleStroke advance the affected stroke’s revision or tombstone revision.
+appendPoints requires all coordinates and pressures to be finite, and pressures to be >= 0. It copies the input list before returning. Empty lists are no-ops after validation. Calling appendPoints on an ended or missing stroke throws IllegalArgumentException.
+Stroke geometry is deterministic. A single-point stroke draws a round dot. Multiple-point strokes connect adjacent points with round-capped, round-joined line segments. Segment width is stroke.widthPx * average(pointA.pressure, pointB.pressure). A segment with width 0 draws nothing.
+endStroke marks a stroke as no longer appendable. removeStroke removes an active stroke; removing a missing stroke is a no-op. restyleStroke changes color and width; missing strokes are no-ops.
+Normal stroke mutations must use dirty-only invalidation. Appending, ending, removing, or restyling a stroke invalidates only tiles intersecting the affected old/new stroke bounds, expanded by the relevant stroke radius. Do not clear all pending or committed tiles unless the dirty bounds cover all such tiles.
+Unaffected committed tiles must remain reusable after stroke edits. Unaffected pending jobs may still commit if their captured viewport/cache generations and captured stroke revisions are still current.
+Raster jobs use immutable snapshots of viewport, tile key, active strokes intersecting that tile, captured stroke revisions, viewport generation, and cache generation. A tile result may commit only if the tile is still pending for that exact job and all captured stroke revisions are still current.
+undo reverts the most recent mutation among begin, append, end, remove, and restyle. redo reapplies the most recently undone mutation. Undo/redo must use dirty-only invalidation for affected stroke bounds. A new stroke mutation after undo clears the redo stack.
+clear removes all strokes, clears undo/redo history, clears pending and committed tiles, and rejects old raster results.
+The composable must not block waiting for raster jobs. When composed at a positive pixel size, it schedules missing visible tiles before prefetch tiles. Prefetch tiles are the one-tile ring around the visible tile rectangle.
+Scheduling must be driven only by ConcurrentStrokeCanvas being composed at a positive pixel size. Tests must not call private/internal scheduling helpers. Recomposition, redraw, size changes, or state revision changes may trigger scheduling, but duplicate pending jobs for the same tile and current generation are forbidden.
+Committed tiles represent the raster cache. In-progress strokes whose latest revision is not represented in a committed visible tile must be drawn as a live vector overlay above committed tiles. The overlay must use the same stroke geometry and must not mutate committed bitmaps.
+Missing visible tiles draw the white background, plus any required live overlay. Committed visible tiles draw in row-major order: top-to-bottom, then left-to-right.
+The tile cache is LRU-capped by maxCachedTiles. Evict least-recently-used non-visible tiles first. Tiles visible in the current draw must not be evicted during that draw, even if the cache temporarily exceeds the cap. Reading a committed tile during composable drawing or renderSnapshot makes it recently used.
+renderSnapshot(width, height) requires positive dimensions. It renders into a new Bitmap using one immutable snapshot. It must not call a composable, schedule raster jobs, wait for workers, or commit results. It must use the same rendering rules as the composable, including live overlay.
+debugState() returns a stable snapshot without mutating state, scheduling jobs, waiting for workers, or exposing mutable internal collections. commitThreadIds records the thread id used for each committed tile since construction or latest clear; every value must equal mainThreadId.
+submittedTileKeys records tile submission order since construction or latest clear. rejectedCommitCount counts stale tile results rejected at commit time. evictedTiles records tile eviction order since construction or latest clear.
+The implementation must not deadlock under concurrent viewport changes, stroke mutations, undo/redo, clear, composition/drawing, snapshots, and out-of-order worker completions.
+
+
+
+Reference Solution
+
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import java.util.LinkedHashMap
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+private const val TILE_SIZE = 256
+private const val BACKGROUND_COLOR = Color.WHITE
+
+@Composable
+fun ConcurrentStrokeCanvas(
+    state: StrokeCanvasState,
+    modifier: Modifier = Modifier
+) {
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+
+    @Suppress("UNUSED_VARIABLE")
+    val version = state.versionForCompose
+
+    SideEffect {
+        if (canvasSize.width > 0 && canvasSize.height > 0) {
+            state.scheduleVisibleTiles(canvasSize.width, canvasSize.height)
+        }
+    }
+
+    Canvas(
+        modifier = modifier.onSizeChanged { canvasSize = it }
+    ) {
+        val width = size.width.roundToInt()
+        val height = size.height.roundToInt()
+
+        if (width > 0 && height > 0) {
+            drawIntoCanvas { canvas ->
+                state.drawCommittedTo(
+                    canvas = canvas.nativeCanvas,
+                    width = width,
+                    height = height
+                )
+            }
+        }
+    }
+}
+
+@Stable
+class StrokeCanvasState(
+    private val rasterExecutor: Executor = Executors.newFixedThreadPool(2),
+    private val maxCachedTiles: Int = 128
+) {
+    private val lock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainThreadId = Looper.getMainLooper().thread.id
+
+    private var composeVersion by mutableIntStateOf(0)
+
+    internal val versionForCompose: Int
+        get() = composeVersion
+
+    private var sceneGeneration: Long = 0L
+    private var viewportGeneration: Long = 0L
+    private var cacheGeneration: Long = 0L
+
+    private var scale: Float = 1f
+    private var offsetX: Float = 0f
+    private var offsetY: Float = 0f
+
+    private var lastComposeWidth: Int = 0
+    private var lastComposeHeight: Int = 0
+
+    private var nextOrder: Int = 0
+    private var nextJobId: Long = 0L
+
+    private val knownRevisions = HashMap<String, Long>()
+    private val strokes = LinkedHashMap<String, StrokeRecord>()
+
+    private val undoStack = ArrayList<ModelSnapshot>()
+    private val redoStack = ArrayList<ModelSnapshot>()
+
+    private val pending = LinkedHashMap<TileKey, PendingTile>()
+    private val committed = LinkedHashMap<TileKey, TileBitmap>()
+    private val lru = LinkedHashMap<TileKey, Long>()
+
+    private var lruClock: Long = 0L
+    private var currentVisibleTiles: Set<TileKey> = emptySet()
+
+    private val commitThreadIds = ArrayList<Long>()
+    private var submittedJobCount: Long = 0L
+    private val submittedTileKeys = ArrayList<TileKey>()
+    private var rejectedCommitCount: Long = 0L
+    private val evictedTiles = ArrayList<TileKey>()
+
+    init {
+        require(maxCachedTiles > 0) {
+            "maxCachedTiles must be > 0"
+        }
+    }
+
+    fun setViewport(scale: Float, offsetX: Float, offsetY: Float) {
+        require(scale.isFinite() && scale > 0f) { "scale must be finite and > 0" }
+        require(offsetX.isFinite()) { "offsetX must be finite" }
+        require(offsetY.isFinite()) { "offsetY must be finite" }
+
+        synchronized(lock) {
+            this.scale = scale
+            this.offsetX = offsetX
+            this.offsetY = offsetY
+
+            viewportGeneration++
+            pending.clear()
+            committed.clear()
+            lru.clear()
+            refreshVisibleTilesLocked()
+        }
+
+        requestRedraw()
+    }
+
+    fun beginStroke(strokeId: String, color: Int, widthPx: Float) {
+        validateStrokeId(strokeId)
+        validateWidth(widthPx)
+
+        synchronized(lock) {
+            if (strokes.containsKey(strokeId)) {
+                throw IllegalArgumentException("duplicate active strokeId")
+            }
+
+            pushUndoLocked()
+            redoStack.clear()
+
+            val revision = nextRevisionLocked(strokeId)
+
+            strokes[strokeId] = StrokeRecord(
+                id = strokeId,
+                color = color,
+                widthPx = widthPx,
+                points = emptyList(),
+                ended = false,
+                order = nextOrder++,
+                revision = revision
+            )
+
+            sceneGeneration++
+        }
+
+        requestRedraw()
+    }
+
+    fun appendPoints(strokeId: String, points: List<StrokePoint>) {
+        validateStrokeId(strokeId)
+        validatePoints(points)
+
+        if (points.isEmpty()) return
+
+        val copied = points.map {
+            StrokePoint(it.x, it.y, it.pressure)
+        }
+
+        synchronized(lock) {
+            val old = strokes[strokeId]
+                ?: throw IllegalArgumentException("missing stroke")
+
+            if (old.ended) {
+                throw IllegalArgumentException("stroke already ended")
+            }
+
+            pushUndoLocked()
+            redoStack.clear()
+
+            val dirtyPoints =
+                if (old.points.isNotEmpty()) {
+                    listOf(old.points.last()) + copied
+                } else {
+                    copied
+                }
+
+            val dirtyBounds = screenBoundsForPointsLocked(
+                points = dirtyPoints,
+                widthPx = old.widthPx
+            )
+
+            val updated = old.copy(
+                points = old.points + copied,
+                revision = nextRevisionLocked(strokeId)
+            )
+
+            strokes[strokeId] = updated
+            sceneGeneration++
+
+            invalidateTilesForBoundsLocked(dirtyBounds)
+        }
+
+        requestRedraw()
+    }
+
+    fun endStroke(strokeId: String) {
+        validateStrokeId(strokeId)
+
+        synchronized(lock) {
+            val old = strokes[strokeId]
+                ?: throw IllegalArgumentException("missing stroke")
+
+            if (old.ended) return
+
+            pushUndoLocked()
+            redoStack.clear()
+
+            val dirtyBounds = screenBoundsForStrokeLocked(old)
+
+            strokes[strokeId] = old.copy(
+                ended = true,
+                revision = nextRevisionLocked(strokeId)
+            )
+
+            sceneGeneration++
+            invalidateTilesForBoundsLocked(dirtyBounds)
+        }
+
+        requestRedraw()
+    }
+
+    fun removeStroke(strokeId: String) {
+        validateStrokeId(strokeId)
+
+        synchronized(lock) {
+            val old = strokes[strokeId] ?: return
+
+            pushUndoLocked()
+            redoStack.clear()
+
+            val dirtyBounds = screenBoundsForStrokeLocked(old)
+
+            strokes.remove(strokeId)
+            nextRevisionLocked(strokeId)
+
+            sceneGeneration++
+            invalidateTilesForBoundsLocked(dirtyBounds)
+        }
+
+        requestRedraw()
+    }
+
+    fun restyleStroke(strokeId: String, color: Int, widthPx: Float) {
+        validateStrokeId(strokeId)
+        validateWidth(widthPx)
+
+        synchronized(lock) {
+            val old = strokes[strokeId] ?: return
+
+            pushUndoLocked()
+            redoStack.clear()
+
+            val oldBounds = screenBoundsForStrokeLocked(old)
+
+            val updated = old.copy(
+                color = color,
+                widthPx = widthPx,
+                revision = nextRevisionLocked(strokeId)
+            )
+
+            val newBounds = screenBoundsForStrokeLocked(updated)
+
+            strokes[strokeId] = updated
+
+            sceneGeneration++
+            invalidateTilesForBoundsLocked(unionBounds(oldBounds, newBounds))
+        }
+
+        requestRedraw()
+    }
+
+    fun undo() {
+        synchronized(lock) {
+            if (undoStack.isEmpty()) return
+
+            val current = snapshotModelLocked()
+            val previous = undoStack.removeAt(undoStack.lastIndex)
+            redoStack.add(current)
+
+            restoreModelDirtyLocked(previous)
+        }
+
+        requestRedraw()
+    }
+
+    fun redo() {
+        synchronized(lock) {
+            if (redoStack.isEmpty()) return
+
+            val current = snapshotModelLocked()
+            val next = redoStack.removeAt(redoStack.lastIndex)
+            undoStack.add(current)
+
+            restoreModelDirtyLocked(next)
+        }
+
+        requestRedraw()
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            knownRevisions.clear()
+            strokes.clear()
+            undoStack.clear()
+            redoStack.clear()
+
+            pending.clear()
+            committed.clear()
+            lru.clear()
+            currentVisibleTiles = emptySet()
+
+            commitThreadIds.clear()
+            submittedTileKeys.clear()
+            evictedTiles.clear()
+            rejectedCommitCount = 0L
+
+            sceneGeneration++
+            cacheGeneration++
+        }
+
+        requestRedraw()
+    }
+
+    fun renderSnapshot(width: Int, height: Int): Bitmap {
+        require(width > 0) { "width must be > 0" }
+        require(height > 0) { "height must be > 0" }
+
+        val snapshot = synchronized(lock) {
+            makeRenderSnapshotLocked(
+                width = width,
+                height = height,
+                markReadForLru = true
+            )
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bitmap)
+        renderSnapshotToCanvas(canvas, snapshot)
+        return bitmap
+    }
+
+    fun debugState(): StrokeCanvasDebugState {
+        return synchronized(lock) {
+            StrokeCanvasDebugState(
+                sceneGeneration = sceneGeneration,
+                viewportGeneration = viewportGeneration,
+                committedTiles = committed.keys.toSet(),
+                pendingTiles = pending.keys.toSet(),
+                activeStrokeIds = strokes.keys.toSet(),
+                mainThreadId = mainThreadId,
+                commitThreadIds = commitThreadIds.toList(),
+                submittedJobCount = submittedJobCount,
+                submittedTileKeys = submittedTileKeys.toList(),
+                rejectedCommitCount = rejectedCommitCount,
+                evictedTiles = evictedTiles.toList()
+            )
+        }
+    }
+
+    internal fun scheduleVisibleTiles(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+
+        val jobs = synchronized(lock) {
+            lastComposeWidth = width
+            lastComposeHeight = height
+            prepareJobsLocked(width, height)
+        }
+
+        for (job in jobs) {
+            rasterExecutor.execute {
+                val bitmap = rasterizeTile(job)
+                mainHandler.post {
+                    commitTile(job, bitmap)
+                }
+            }
+        }
+    }
+
+    internal fun drawCommittedTo(
+        canvas: AndroidCanvas,
+        width: Int,
+        height: Int
+    ) {
+        if (width <= 0 || height <= 0) return
+
+        val snapshot = synchronized(lock) {
+            lastComposeWidth = width
+            lastComposeHeight = height
+            refreshVisibleTilesLocked()
+
+            makeRenderSnapshotLocked(
+                width = width,
+                height = height,
+                markReadForLru = true
+            )
+        }
+
+        renderSnapshotToCanvas(canvas, snapshot)
+    }
+
+    private fun prepareJobsLocked(width: Int, height: Int): List<RasterJob> {
+        refreshVisibleTilesLocked()
+
+        for (key in currentVisibleTiles) {
+            if (committed.containsKey(key)) {
+                markUsedLocked(key)
+            }
+        }
+
+        val visible = visibleTiles(width, height)
+        val prefetch = prefetchTiles(visible)
+
+        val orderedKeys =
+            visible.sortedRowMajor() +
+                prefetch.filter { it !in visible }.sortedRowMajor()
+
+        val jobs = ArrayList<RasterJob>()
+
+        for (key in orderedKeys) {
+            if (committed.containsKey(key)) continue
+            if (pending.containsKey(key)) continue
+
+            val tileRect = tileRect(key)
+            val relevant = strokes.values
+                .sortedBy { it.order }
+                .filter { stroke ->
+                    val bounds = screenBoundsForStrokeLocked(stroke)
+                    bounds != null && rectsIntersect(bounds, tileRect)
+                }
+
+            val capturedRevisions = relevant.associate { it.id to it.revision }
+
+            val jobId = nextJobId++
+
+            val job = RasterJob(
+                jobId = jobId,
+                key = key,
+                viewportGeneration = viewportGeneration,
+                cacheGeneration = cacheGeneration,
+                scale = scale,
+                offsetX = offsetX,
+                offsetY = offsetY,
+                strokes = relevant.map { it.copyForJob() },
+                capturedRevisions = capturedRevisions
+            )
+
+            pending[key] = PendingTile(
+                jobId = jobId,
+                viewportGeneration = viewportGeneration,
+                cacheGeneration = cacheGeneration
+            )
+
+            submittedJobCount++
+            submittedTileKeys.add(key)
+
+            jobs.add(job)
+        }
+
+        evictIfNeededLocked()
+        return jobs
+    }
+
+    private fun commitTile(job: RasterJob, bitmap: Bitmap) {
+        var committedSomething = false
+
+        synchronized(lock) {
+            if (job.viewportGeneration != viewportGeneration) {
+                rejectedCommitCount++
+                return
+            }
+
+            if (job.cacheGeneration != cacheGeneration) {
+                rejectedCommitCount++
+                return
+            }
+
+            val pendingTile = pending[job.key]
+
+            if (pendingTile == null || pendingTile.jobId != job.jobId) {
+                rejectedCommitCount++
+                return
+            }
+
+            if (
+                pendingTile.viewportGeneration != job.viewportGeneration ||
+                pendingTile.cacheGeneration != job.cacheGeneration
+            ) {
+                rejectedCommitCount++
+                return
+            }
+
+            for ((strokeId, capturedRevision) in job.capturedRevisions) {
+                if (knownRevisions[strokeId] != capturedRevision) {
+                    pending.remove(job.key)
+                    rejectedCommitCount++
+                    return
+                }
+            }
+
+            pending.remove(job.key)
+
+            committed[job.key] = TileBitmap(
+                key = job.key,
+                bitmap = bitmap,
+                viewportGeneration = job.viewportGeneration,
+                cacheGeneration = job.cacheGeneration,
+                representedRevisions = job.capturedRevisions.toMap()
+            )
+
+            markUsedLocked(job.key)
+            commitThreadIds.add(Thread.currentThread().id)
+
+            refreshVisibleTilesLocked()
+            evictIfNeededLocked()
+
+            committedSomething = true
+        }
+
+        if (committedSomething) {
+            requestRedraw()
+        }
+    }
+
+    private fun rasterizeTile(job: RasterJob): Bitmap {
+        val bitmap = Bitmap.createBitmap(
+            TILE_SIZE,
+            TILE_SIZE,
+            Bitmap.Config.ARGB_8888
+        )
+
+        val canvas = AndroidCanvas(bitmap)
+        canvas.drawColor(BACKGROUND_COLOR)
+
+        canvas.save()
+        canvas.clipRect(0, 0, TILE_SIZE, TILE_SIZE)
+
+        val tileLeft = job.key.x * TILE_SIZE
+        val tileTop = job.key.y * TILE_SIZE
+        canvas.translate(-tileLeft.toFloat(), -tileTop.toFloat())
+
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+
+        for (stroke in job.strokes.sortedBy { it.order }) {
+            drawStrokeOnCanvas(
+                canvas = canvas,
+                stroke = stroke,
+                scale = job.scale,
+                offsetX = job.offsetX,
+                offsetY = job.offsetY,
+                strokePaint = strokePaint,
+                fillPaint = fillPaint
+            )
+        }
+
+        canvas.restore()
+        return bitmap
+    }
+
+    private fun makeRenderSnapshotLocked(
+        width: Int,
+        height: Int,
+        markReadForLru: Boolean
+    ): RenderSnapshot {
+        val visible = visibleTiles(width, height)
+
+        if (markReadForLru) {
+            for (key in visible) {
+                if (committed.containsKey(key)) {
+                    markUsedLocked(key)
+                }
+            }
+        }
+
+        return RenderSnapshot(
+            width = width,
+            height = height,
+            scale = scale,
+            offsetX = offsetX,
+            offsetY = offsetY,
+            visibleTiles = visible,
+            tiles = committed.values.map {
+                SnapshotTile(
+                    key = it.key,
+                    bitmap = it.bitmap,
+                    representedRevisions = it.representedRevisions.toMap()
+                )
+            },
+            strokes = strokes.values
+                .sortedBy { it.order }
+                .map { it.copyForJob() }
+        )
+    }
+
+    private fun renderSnapshotToCanvas(
+        canvas: AndroidCanvas,
+        snapshot: RenderSnapshot
+    ) {
+        canvas.drawColor(BACKGROUND_COLOR)
+
+        val tileMap = snapshot.tiles.associateBy { it.key }
+
+        for (tile in snapshot.tiles.sortedWith(compareBy<SnapshotTile> { it.key.y }.thenBy { it.key.x })) {
+            val left = tile.key.x * TILE_SIZE
+            val top = tile.key.y * TILE_SIZE
+
+            if (left >= snapshot.width || top >= snapshot.height) continue
+            if (left + TILE_SIZE <= 0 || top + TILE_SIZE <= 0) continue
+
+            canvas.drawBitmap(
+                tile.bitmap,
+                left.toFloat(),
+                top.toFloat(),
+                null
+            )
+        }
+
+        drawLiveOverlay(
+            canvas = canvas,
+            snapshot = snapshot,
+            tileMap = tileMap
+        )
+    }
+
+    private fun drawLiveOverlay(
+        canvas: AndroidCanvas,
+        snapshot: RenderSnapshot,
+        tileMap: Map<TileKey, SnapshotTile>
+    ) {
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+
+        for (tileKey in snapshot.visibleTiles.sortedRowMajor()) {
+            val tileRect = tileRect(tileKey)
+            val committedTile = tileMap[tileKey]
+
+            canvas.save()
+            canvas.clipRect(tileRect)
+
+            for (stroke in snapshot.strokes.sortedBy { it.order }) {
+                if (stroke.ended) continue
+
+                val strokeBounds = screenBoundsForStroke(
+                    stroke = stroke,
+                    scale = snapshot.scale,
+                    offsetX = snapshot.offsetX,
+                    offsetY = snapshot.offsetY
+                )
+
+                if (strokeBounds == null || !rectsIntersect(strokeBounds, tileRect)) {
+                    continue
+                }
+
+                val committedRevision =
+                    committedTile?.representedRevisions?.get(stroke.id)
+
+                if (committedRevision == stroke.revision) {
+                    continue
+                }
+
+                drawStrokeOnCanvas(
+                    canvas = canvas,
+                    stroke = stroke,
+                    scale = snapshot.scale,
+                    offsetX = snapshot.offsetX,
+                    offsetY = snapshot.offsetY,
+                    strokePaint = strokePaint,
+                    fillPaint = fillPaint
+                )
+            }
+
+            canvas.restore()
+        }
+    }
+
+    private fun drawStrokeOnCanvas(
+        canvas: AndroidCanvas,
+        stroke: JobStroke,
+        scale: Float,
+        offsetX: Float,
+        offsetY: Float,
+        strokePaint: Paint,
+        fillPaint: Paint
+    ) {
+        if (stroke.points.isEmpty()) return
+
+        if (stroke.points.size == 1) {
+            val point = stroke.points[0]
+            val radius = stroke.widthPx * point.pressure / 2f
+            if (radius <= 0f) return
+
+            fillPaint.color = stroke.color
+
+            val sx = (point.x - offsetX) * scale
+            val sy = (point.y - offsetY) * scale
+
+            canvas.drawCircle(sx, sy, radius, fillPaint)
+            return
+        }
+
+        strokePaint.color = stroke.color
+
+        for (index in 1 until stroke.points.size) {
+            val a = stroke.points[index - 1]
+            val b = stroke.points[index]
+
+            val width = stroke.widthPx * ((a.pressure + b.pressure) / 2f)
+            if (width <= 0f) continue
+
+            strokePaint.strokeWidth = width
+
+            val ax = (a.x - offsetX) * scale
+            val ay = (a.y - offsetY) * scale
+            val bx = (b.x - offsetX) * scale
+            val by = (b.y - offsetY) * scale
+
+            canvas.drawLine(ax, ay, bx, by, strokePaint)
+        }
+    }
+
+    private fun refreshVisibleTilesLocked() {
+        currentVisibleTiles =
+            if (lastComposeWidth > 0 && lastComposeHeight > 0) {
+                visibleTiles(lastComposeWidth, lastComposeHeight)
+            } else {
+                emptySet()
+            }
+    }
+
+    private fun visibleTiles(width: Int, height: Int): Set<TileKey> {
+        if (width <= 0 || height <= 0) return emptySet()
+
+        val maxX = floor((width - 1).toFloat() / TILE_SIZE.toFloat()).toInt()
+        val maxY = floor((height - 1).toFloat() / TILE_SIZE.toFloat()).toInt()
+
+        val result = LinkedHashSet<TileKey>()
+
+        for (y in 0..maxY) {
+            for (x in 0..maxX) {
+                result.add(TileKey(x, y))
+            }
+        }
+
+        return result
+    }
+
+    private fun prefetchTiles(visible: Set<TileKey>): Set<TileKey> {
+        if (visible.isEmpty()) return emptySet()
+
+        val minX = visible.minOf { it.x }
+        val maxX = visible.maxOf { it.x }
+        val minY = visible.minOf { it.y }
+        val maxY = visible.maxOf { it.y }
+
+        val result = LinkedHashSet<TileKey>()
+
+        for (y in (minY - 1)..(maxY + 1)) {
+            for (x in (minX - 1)..(maxX + 1)) {
+                result.add(TileKey(x, y))
+            }
+        }
+
+        return result
+    }
+
+    private fun Collection<TileKey>.sortedRowMajor(): List<TileKey> {
+        return sortedWith(compareBy<TileKey> { it.y }.thenBy { it.x })
+    }
+
+    private fun evictIfNeededLocked() {
+        while (committed.size > maxCachedTiles) {
+            val candidates = committed.keys.filter { it !in currentVisibleTiles }
+
+            if (candidates.isEmpty()) {
+                return
+            }
+
+            val victim = candidates.minByOrNull { key ->
+                lru[key] ?: Long.MIN_VALUE
+            } ?: return
+
+            committed.remove(victim)
+            lru.remove(victim)
+            evictedTiles.add(victim)
+        }
+    }
+
+    private fun invalidateTilesForBoundsLocked(bounds: RectF?) {
+        if (bounds == null) return
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return
+
+        val epsilon = 0.001f
+
+        val minX = floor(bounds.left / TILE_SIZE.toFloat()).toInt()
+        val maxX = floor((bounds.right - epsilon) / TILE_SIZE.toFloat()).toInt()
+        val minY = floor(bounds.top / TILE_SIZE.toFloat()).toInt()
+        val maxY = floor((bounds.bottom - epsilon) / TILE_SIZE.toFloat()).toInt()
+
+        for (y in minY..maxY) {
+            for (x in minX..maxX) {
+                val key = TileKey(x, y)
+                committed.remove(key)
+                pending.remove(key)
+                lru.remove(key)
+            }
+        }
+
+        evictIfNeededLocked()
+    }
+
+    private fun screenBoundsForStrokeLocked(stroke: StrokeRecord): RectF? {
+        return screenBoundsForStroke(
+            stroke = stroke.copyForJob(),
+            scale = scale,
+            offsetX = offsetX,
+            offsetY = offsetY
+        )
+    }
+
+    private fun screenBoundsForPointsLocked(
+        points: List<StrokePoint>,
+        widthPx: Float
+    ): RectF? {
+        return screenBoundsForPoints(
+            points = points,
+            widthPx = widthPx,
+            scale = scale,
+            offsetX = offsetX,
+            offsetY = offsetY
+        )
+    }
+
+    private fun restoreModelDirtyLocked(target: ModelSnapshot) {
+        val current = strokes.values.map { it.copyForSnapshot() }
+        val targetStrokes = target.strokes.map { it.copyForSnapshot() }
+
+        val currentById = current.associateBy { it.id }
+        val targetById = targetStrokes.associateBy { it.id }
+
+        val changedIds = LinkedHashSet<String>()
+        changedIds.addAll(currentById.keys)
+        changedIds.addAll(targetById.keys)
+
+        val actuallyChanged = changedIds.filter { id ->
+            !sameVisual(currentById[id], targetById[id])
+        }.toSet()
+
+        var dirtyBounds: RectF? = null
+
+        for (id in actuallyChanged) {
+            dirtyBounds = unionBounds(
+                dirtyBounds,
+                currentById[id]?.let { screenBoundsForStrokeLocked(it) }
+            )
+            dirtyBounds = unionBounds(
+                dirtyBounds,
+                targetById[id]?.let { screenBoundsForStrokeLocked(it) }
+            )
+        }
+
+        strokes.clear()
+
+        val targetIds = targetStrokes.map { it.id }.toSet()
+
+        for (stroke in targetStrokes.sortedBy { it.order }) {
+            val revision =
+                if (stroke.id in actuallyChanged) {
+                    nextRevisionLocked(stroke.id)
+                } else {
+                    val existing = knownRevisions[stroke.id] ?: stroke.revision
+                    knownRevisions[stroke.id] = max(existing, stroke.revision)
+                    existing
+                }
+
+            strokes[stroke.id] = stroke.copy(
+                points = stroke.points.toList(),
+                revision = revision
+            )
+        }
+
+        for (id in actuallyChanged) {
+            if (id !in targetIds) {
+                nextRevisionLocked(id)
+            }
+        }
+
+        nextOrder = target.nextOrder
+        sceneGeneration++
+
+        invalidateTilesForBoundsLocked(dirtyBounds)
+    }
+
+    private fun sameVisual(a: StrokeRecord?, b: StrokeRecord?): Boolean {
+        if (a == null || b == null) return a == b
+
+        return a.id == b.id &&
+            a.color == b.color &&
+            a.widthPx == b.widthPx &&
+            a.points == b.points &&
+            a.ended == b.ended &&
+            a.order == b.order
+    }
+
+    private fun pushUndoLocked() {
+        undoStack.add(snapshotModelLocked())
+    }
+
+    private fun snapshotModelLocked(): ModelSnapshot {
+        return ModelSnapshot(
+            strokes = strokes.values.map { it.copyForSnapshot() },
+            nextOrder = nextOrder
+        )
+    }
+
+    private fun nextRevisionLocked(strokeId: String): Long {
+        val next = (knownRevisions[strokeId] ?: -1L) + 1L
+        knownRevisions[strokeId] = next
+        return next
+    }
+
+    private fun markUsedLocked(key: TileKey) {
+        lruClock++
+        lru[key] = lruClock
+    }
+
+    private fun requestRedraw() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            composeVersion++
+        } else {
+            mainHandler.post {
+                composeVersion++
+            }
+        }
+    }
+
+    private fun validateStrokeId(strokeId: String) {
+        require(strokeId.isNotEmpty()) {
+            "strokeId must be non-empty"
+        }
+    }
+
+    private fun validateWidth(widthPx: Float) {
+        require(widthPx.isFinite() && widthPx > 0f) {
+            "widthPx must be finite and > 0"
+        }
+    }
+
+    private fun validatePoints(points: List<StrokePoint>) {
+        for (point in points) {
+            require(point.x.isFinite()) { "point.x must be finite" }
+            require(point.y.isFinite()) { "point.y must be finite" }
+            require(point.pressure.isFinite()) { "point.pressure must be finite" }
+            require(point.pressure >= 0f) { "point.pressure must be >= 0" }
+        }
+    }
+
+    private data class StrokeRecord(
+        val id: String,
+        val color: Int,
+        val widthPx: Float,
+        val points: List<StrokePoint>,
+        val ended: Boolean,
+        val order: Int,
+        val revision: Long
+    ) {
+        fun copyForJob(): JobStroke {
+            return JobStroke(
+                id = id,
+                color = color,
+                widthPx = widthPx,
+                points = points.toList(),
+                ended = ended,
+                order = order,
+                revision = revision
+            )
+        }
+
+        fun copyForSnapshot(): StrokeRecord {
+            return copy(points = points.toList())
+        }
+    }
+
+    private data class JobStroke(
+        val id: String,
+        val color: Int,
+        val widthPx: Float,
+        val points: List<StrokePoint>,
+        val ended: Boolean,
+        val order: Int,
+        val revision: Long
+    )
+
+    private data class ModelSnapshot(
+        val strokes: List<StrokeRecord>,
+        val nextOrder: Int
+    )
+
+    private data class PendingTile(
+        val jobId: Long,
+        val viewportGeneration: Long,
+        val cacheGeneration: Long
+    )
+
+    private data class TileBitmap(
+        val key: TileKey,
+        val bitmap: Bitmap,
+        val viewportGeneration: Long,
+        val cacheGeneration: Long,
+        val representedRevisions: Map<String, Long>
+    )
+
+    private data class RasterJob(
+        val jobId: Long,
+        val key: TileKey,
+        val viewportGeneration: Long,
+        val cacheGeneration: Long,
+        val scale: Float,
+        val offsetX: Float,
+        val offsetY: Float,
+        val strokes: List<JobStroke>,
+        val capturedRevisions: Map<String, Long>
+    )
+
+    private data class SnapshotTile(
+        val key: TileKey,
+        val bitmap: Bitmap,
+        val representedRevisions: Map<String, Long>
+    )
+
+    private data class RenderSnapshot(
+        val width: Int,
+        val height: Int,
+        val scale: Float,
+        val offsetX: Float,
+        val offsetY: Float,
+        val visibleTiles: Set<TileKey>,
+        val tiles: List<SnapshotTile>,
+        val strokes: List<JobStroke>
+    )
+}
+
+private fun tileRect(key: TileKey): RectF {
+    val left = key.x * TILE_SIZE
+    val top = key.y * TILE_SIZE
+
+    return RectF(
+        left.toFloat(),
+        top.toFloat(),
+        (left + TILE_SIZE).toFloat(),
+        (top + TILE_SIZE).toFloat()
+    )
+}
+
+private fun rectsIntersect(a: RectF, b: RectF): Boolean {
+    return a.left < b.right &&
+        a.right > b.left &&
+        a.top < b.bottom &&
+        a.bottom > b.top
+}
+
+private fun unionBounds(a: RectF?, b: RectF?): RectF? {
+    if (a == null) return b
+    if (b == null) return a
+
+    return RectF(
+        min(a.left, b.left),
+        min(a.top, b.top),
+        max(a.right, b.right),
+        max(a.bottom, b.bottom)
+    )
+}
+
+private fun screenBoundsForStroke(
+    stroke: StrokeCanvasState.JobStroke,
+    scale: Float,
+    offsetX: Float,
+    offsetY: Float
+): RectF? {
+    return screenBoundsForPoints(
+        points = stroke.points,
+        widthPx = stroke.widthPx,
+        scale = scale,
+        offsetX = offsetX,
+        offsetY = offsetY
+    )
+}
+
+private fun screenBoundsForPoints(
+    points: List<StrokePoint>,
+    widthPx: Float,
+    scale: Float,
+    offsetX: Float,
+    offsetY: Float
+): RectF? {
+    if (points.isEmpty()) return null
+
+    var left = Float.POSITIVE_INFINITY
+    var top = Float.POSITIVE_INFINITY
+    var right = Float.NEGATIVE_INFINITY
+    var bottom = Float.NEGATIVE_INFINITY
+    var maxPressure = 0f
+
+    for (point in points) {
+        val sx = (point.x - offsetX) * scale
+        val sy = (point.y - offsetY) * scale
+
+        left = min(left, sx)
+        top = min(top, sy)
+        right = max(right, sx)
+        bottom = max(bottom, sy)
+        maxPressure = max(maxPressure, point.pressure)
+    }
+
+    val radius = widthPx * maxPressure / 2f
+
+    if (radius <= 0f && left == right && top == bottom) {
+        return null
+    }
+
+    return RectF(
+        left - radius,
+        top - radius,
+        right + radius,
+        bottom + radius
+    )
+}
+
+data class StrokePoint(
+    val x: Float,
+    val y: Float,
+    val pressure: Float = 1f
+)
+
+data class TileKey(
+    val x: Int,
+    val y: Int
+)
+
+data class StrokeCanvasDebugState(
+    val sceneGeneration: Long,
+    val viewportGeneration: Long,
+    val committedTiles: Set<TileKey>,
+    val pendingTiles: Set<TileKey>,
+    val activeStrokeIds: Set<String>,
+    val mainThreadId: Long,
+    val commitThreadIds: List<Long>,
+    val submittedJobCount: Long,
+    val submittedTileKeys: List<TileKey>,
+    val rejectedCommitCount: Long,
+    val evictedTiles: List<TileKey>
+)
+
+
+
+
+
+Tests
+Invalid inputs — Robolectric unit test
+Verify invalid maxCachedTiles, invalid viewport values, empty strokeId, invalid stroke width, invalid point coordinates, negative pressure, and invalid snapshot sizes throw IllegalArgumentException.
+Compose scheduling only through composition — Compose UI test on Robolectric
+Do not call internal scheduling helpers. Compose ConcurrentStrokeCanvas(state, Modifier.size(...)), run Compose/main-thread work, and verify pending jobs appear. Recompose repeatedly with the same state and size and verify no duplicate jobs are submitted.
+Missing tile background and nonblocking draw — Compose UI test + Robolectric bitmap assertion
+Use a controlled executor that blocks raster jobs. Compose the canvas and verify rendering returns immediately. Verify visible missing tiles draw white background plus only required live overlay.
+Single stroke crosses tile boundary — Roborazzi screenshot test
+Draw a diagonal stroke crossing multiple tiles. Complete tile jobs out of order. Verify the final screenshot is continuous across tile boundaries.
+Input point list is copied — Robolectric unit test + bitmap assertion
+Append points, mutate the caller’s list afterward, complete raster jobs, and verify rendering uses the original copied points.
+Single-point stroke dot — Roborazzi screenshot test
+Create a stroke with one point and nonzero pressure. Verify a round dot appears at the transformed point.
+Zero-pressure segment draws nothing — Robolectric bitmap test
+Append two points with pressure 0. Verify the segment contributes no non-background pixels.
+Append while raster pending rejects stale affected result — Robolectric concurrency test
+Begin a stroke, append initial points, schedule tile jobs, then append more points before old jobs finish. Complete old jobs afterward. Verify affected old tile results are rejected and rejectedCommitCount increases.
+Unaffected pending job survives stroke mutation — Robolectric concurrency test
+Schedule pending jobs for two distant tiles. Mutate a stroke affecting only one tile. Complete both old jobs. Verify the affected job is rejected and the unaffected job commits.
+Remove while raster pending — Robolectric concurrency test + bitmap assertion
+Schedule jobs for a visible stroke, remove it before workers finish, complete old jobs, and verify the stroke does not reappear.
+Restyle invalidates old and new bounds — Roborazzi screenshot test
+Restyle a stroke from thin to thick and a different color. Verify tiles intersecting both old and newly expanded bounds are invalidated, old style disappears, and new style appears.
+Viewport change rejects stale tiles — Robolectric concurrency test
+Schedule jobs under viewport A, call setViewport to viewport B, then complete viewport-A jobs. Verify they are rejected and do not commit.
+Visible before prefetch priority — Compose UI test on Robolectric
+Compose at a size with visible tiles and a prefetch ring. Verify submittedTileKeys lists all visible tiles in row-major order before any prefetch tile, and prefetch tiles are also row-major.
+LRU evicts non-visible first — Robolectric state test
+Use a small cache. Render several tiles, pan so some become non-visible, render more tiles, and verify least-recently-used non-visible tiles are evicted before visible tiles.
+Visible protection — Robolectric state test
+Set maxCachedTiles smaller than the visible tile count. Verify visible tiles survive the current draw even if the cache temporarily exceeds the cap.
+Undo/redo stroke lifecycle — Roborazzi screenshot test
+Draw strokes A, B, C. Remove B, undo, redo. Verify order is A/B/C after undo and A/C after redo, with only affected tiles invalidated.
+Undo append is dirty-only — Robolectric state test + bitmap assertion
+Append points that extend a stroke into a new tile, then undo. Verify newly touched tiles are invalidated, but unrelated committed tiles remain reusable.
+Undo rejects stale jobs — Robolectric concurrency test
+Schedule jobs for a stroke, call undo before workers complete, then complete old jobs. Verify stale affected tiles do not commit.
+Live overlay while raster pending — Roborazzi screenshot test
+Block workers, append points to an in-progress visible stroke, and capture a screenshot. Verify the new segment appears as a live overlay before any new tile commits. Complete raster jobs and verify the final screenshot does not double-draw.
+Stale tile with partially stale stroke set rejected — Robolectric concurrency test
+Create a tile job capturing strokes A and B. Mutate only B before the job completes. Complete the old job and verify the whole tile is rejected.
+Clear rejects stale workers — Robolectric concurrency test
+Schedule jobs, call clear, then complete old jobs. Verify committed tiles remain empty and old strokes do not reappear.
+renderSnapshot safety — Robolectric unit test + bitmap assertion
+Call renderSnapshot while workers are pending. Verify it returns without waiting, does not schedule jobs, and produces a bitmap from committed tiles plus required live overlay.
+Main-thread commit observability — Robolectric concurrency test
+Complete raster jobs from worker threads, run pending main-thread tasks, and verify every value in commitThreadIds equals mainThreadId.
+Eviction order observable — Robolectric state test
+Under small cache pressure, render tiles, read some through renderSnapshot, then pan. Verify evictedTiles shows least-recently-used non-visible tiles evicted first and visible tiles protected.
+Dirty-only stress — Robolectric randomized concurrency test
+Randomly interleave append, restyle, remove, undo, redo, viewport pan, snapshot, clear, and out-of-order completions. Verify unaffected committed tiles survive, unaffected pending jobs can commit, stale affected jobs are rejected, no duplicate jobs occur, and no deadlocks happen.
+Visual regression suite — Roborazzi screenshot test
+Capture deterministic screenshots for empty canvas, partial tile commit, full stroke commit, append-while-pending, live overlay, restyle, undo/redo, viewport pan, and cache pressure.
 
