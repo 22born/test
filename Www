@@ -1,3 +1,31 @@
+300 ms + linear/no easing and minimum total index-shift as the tie-break are contractual requirements, I would add dedicated tests for both.
+[Robolectric Test] MOVE duration is exactly 300 ms and uses linear progression
+Freeze the Compose test clock and start a transition with a survivor that has a meaningful horizontal displacement. Record its source X as oldX and destination X as newX.
+During the MOVE phase, check positions at known elapsed times:
+MOVE start:    0 ms   → oldX
+25%:          75 ms   → oldX + 0.25 × (newX - oldX)
+50%:         150 ms   → oldX + 0.50 × (newX - oldX)
+75%:         225 ms   → oldX + 0.75 × (newX - oldX)
+MOVE end:     300 ms   → newX
+The 25% and 75% assertions are useful. Testing only the midpoint is weaker because some easing curves can also pass through 50% position at 50% time.
+This test establishes both:
+translation lasts 300 ms;
+translation is linear, with no easing.
+I'd complement it with a Roborazzi screenshot at 75 ms or 225 ms if you want a visual regression test, but the deterministic position assertion is the stronger test.
+[Robolectric/Unit Test] Minimum total index-shift is used after maximizing survivors
+This needs a deliberately ambiguous string pair where there are multiple order-preserving matchings with the same maximum survivor count, but different total costs:
+total cost = Σ |oldIndex - newIndex|
+The test should verify that the matching with the smaller total cost wins—not a greedy locally-nearest match.
+The priority being tested is:
+1. Matches must preserve relative order
+2. Maximize number of survivors
+3. Among maximum-survivor solutions,
+   minimize Σ |oldIndex - newIndex|
+4. If still tied, resolve deterministically
+This should preferably be a pure unit test against the internal matcher/planner, because screenshots make it unnecessarily difficult to determine precisely which duplicate occurrence was selected.
+
+
+
 Here are the hard cases I'd keep in the hidden suite:
 [Robolectric Test] Crossing would preserve more characters — ab → ba
 A naive “maximize matching characters” implementation preserves both and crosses them. Your contract requires order-preserving survivors, so only one may survive. This catches greedy/global-character matching.
