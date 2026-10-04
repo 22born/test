@@ -1,1 +1,8 @@
+When the same characters appear in both the old and new text, reuse as many of them as possible. Reused characters must stay in the same order and must not move past each other. If there is more than one way to reuse the same number of characters, choose the one where the characters move the least between positions in the old and new text. If there is still more than one choice, always make the same choice.
 
+
+Here are simpler, shorter versions:
+Accessibility: Keep exposing the last completed text during the animation. Expose the new text only when the transition is fully complete.
+Animation timing: The animation must use Compose animation time so it can be controlled by the Compose test clock.
+Visible stages: Show the state after REMOVE for at least one frame before MOVE starts, and show the state after MOVE for at least one frame before INSERT.
+Rapid updates: If the text changes during an animation, finish the current transition first. Keep only the latest requested text, discard earlier pending requests, then transition to the latest text if needed.
