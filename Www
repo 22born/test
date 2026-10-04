@@ -1,3 +1,25 @@
+suggesting were:
+[Robolectric Test] Non-crossing matching — ab → ba
+Verify survivors preserve relative order. The implementation must not keep both characters by crossing them.
+[Robolectric Test] Duplicate-heavy globally optimal matching — aabaa → ababa
+Verify maximum reuse, order preservation, and deterministic matching across repeated characters.
+[Robolectric Test] Return to source — A → B → A
+Request A while A → B is still running. It must finish B, then transition back to A. This catches a subtle pending-target bug.
+[Robolectric Test] Conflation + return to source — A → B, then C → D → A
+While A→B runs, send C, D, A. Expected committed sequence is only:
+A → B → A
+C and D are discarded.
+[Robolectric Test] Update exactly at POST-MOVE boundary
+Change the requested text after MOVE finishes but before INSERT/commit. The first transition must still commit correctly, then animate to the latest pending value.
+[Roborazzi Screenshot Test] care → hair midpoint
+Verify actual per-survivor horizontal movement: a remains where appropriate, r moves toward its destination, inserted h/i are absent, and there are no duplicate survivor copies.
+[Roborazzi Screenshot Test] chair → care midpoint
+Specifically catches the destination-underlay shortcut: only moving survivors should be visible; h/i are gone, e hasn't appeared, and there are no stationary destination copies underneath.
+[Roborazzi Screenshot Test] Zero survivors — abc → XYZ
+Verify REMOVE produces an empty intermediate visual, MOVE doesn't prematurely show XYZ, and XYZ appears only at INSERT.
+
+
+
 300 ms + linear/no easing and minimum total index-shift as the tie-break are contractual requirements, I would add dedicated tests for both.
 [Robolectric Test] MOVE duration is exactly 300 ms and uses linear progression
 Freeze the Compose test clock and start a transition with a survivor that has a meaningful horizontal displacement. Record its source X as oldX and destination X as newX.
