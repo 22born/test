@@ -1,3 +1,64 @@
+1. Collapsed chevron geometry
+   - Center point is exactly 4dp below the endpoint line.
+   - Left/right endpoints are exactly 6dp from center.
+   - Stroke width is 2dp.
+
+2. Chevron midpoint
+   - Tap to expand.
+   - At exactly 150ms, center point is on the endpoint line.
+   - Chevron appears as a flat horizontal line.
+
+3. Chevron animation completion
+   - Tap to expand.
+   - At exactly 300ms, center point is 4dp above the endpoint line.
+   - Chevron is fully pointing up.
+
+4. Chevron reverses without snapping
+   - Tap to expand.
+   - Advance 100ms and record current center-point Y.
+   - Tap again.
+   - Verify the animation continues from the currently rendered Y with no geometry jump.
+   - Verify it then moves toward the collapsed chevron.
+
+5. Content remains collapsed before debounce
+   - Tap to expand.
+   - Advance 499ms.
+   - Content must still have the collapsed 2-line window.
+
+6. Content expansion starts after 500ms
+   - Tap to expand.
+   - Advance exactly 500ms.
+   - Content expansion should begin.
+   - Height should animate toward the 7-line window.
+
+7. Fast taps reset the 500ms debounce
+   - Tap to expand.
+   - Advance 400ms.
+   - Tap to collapse.
+   - Advance 499ms.
+   - Content must not change state.
+   - Content may change only after 500ms from the latest tap.
+
+8. Content height animation takes 800ms
+   - After the 500ms debounce completes, start measuring the content animation.
+   - At 0ms, height is the collapsed height.
+   - During the 800ms animation, height is between collapsed and expanded heights.
+   - At exactly 800ms, height is the 7-line expanded height.
+   - Verify equivalent behavior when collapsing.
+
+9. Arrow and content animations are independent
+   - Tap to expand.
+   - At 300ms, chevron must be fully pointing up.
+   - Content must still be collapsed because the 500ms debounce has not completed.
+
+10. Expansion control visibility
+    - For text requiring <= 2 lines, "Show more" and chevron are not displayed.
+    - For text requiring > 2 lines, "Show more" and chevron are displayed.
+    - Collapsed content shows at most 2 lines.
+    - Expanded content shows at most 7 lines.
+
+
+
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
