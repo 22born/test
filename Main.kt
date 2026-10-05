@@ -1,3 +1,359 @@
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RectangleShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.StrokeCap
+import androidx.compose.ui.layout.onTextLayout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
+
+@Composable
+fun ExpandComponent(
+    contentText: String,
+    modifier: Modifier = Modifier,
+) {
+    /*
+     * Changes immediately on tap.
+     * This drives the chevron.
+     */
+    var requestedExpanded by remember(contentText) {
+        mutableStateOf(false)
+    }
+
+    /*
+     * Changes only after requestedExpanded has remained stable
+     * for 500 ms.
+     *
+     * This drives the content viewport.
+     */
+    var contentExpanded by remember(contentText) {
+        mutableStateOf(false)
+    }
+
+    /*
+     * null means we haven't measured the text yet.
+     */
+    var hasMoreThanTwoLines by remember(contentText) {
+        mutableStateOf<Boolean?>(null)
+    }
+
+    /*
+     * Debounce the content expansion/collapse.
+     *
+     * Every requestedExpanded change cancels the previous
+     * LaunchedEffect coroutine, including its delay.
+     *
+     * Therefore the content only changes after the latest
+     * tap has remained stable for 500 ms.
+     */
+    LaunchedEffect(requestedExpanded) {
+        delay(500)
+        contentExpanded = requestedExpanded
+    }
+
+    /*
+     * Explicit lineHeight gives us deterministic 2-line
+     * and 7-line viewport heights.
+     */
+    val textStyle = TextStyle(
+        fontSize = 10.sp,
+        lineHeight = 12.sp
+    )
+
+    val density = LocalDensity.current
+
+    val collapsedHeight = with(density) {
+        (12.sp * 2).toDp()
+    }
+
+    val expandedHeight = with(density) {
+        (12.sp * 7).toDp()
+    }
+
+    /*
+     * This animation starts only after contentExpanded changes,
+     * which happens after the 500 ms debounce.
+     */
+    val contentHeight by animateDpAsState(
+        targetValue = if (contentExpanded) {
+            expandedHeight
+        } else {
+            collapsedHeight
+        },
+        animationSpec = tween(
+            durationMillis = 800
+        ),
+        label = "contentHeight"
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = Color.Black,
+                shape = RectangleShape
+            )
+            .padding(8.dp)
+    ) {
+
+        /*
+         * First layout pass:
+         *
+         * Measure the text with maxLines = 7.
+         * We only care whether it requires > 2 lines.
+         *
+         * The requirement says content beyond 7 lines is irrelevant
+         * because the component never displays more than 7.
+         */
+        if (hasMoreThanTwoLines == null) {
+
+            Text(
+                text = contentText,
+                modifier = Modifier.fillMaxWidth(),
+                style = textStyle,
+                maxLines = 7,
+                overflow = TextOverflow.Clip,
+                onTextLayout = { result ->
+                    hasMoreThanTwoLines = result.lineCount > 2
+                }
+            )
+
+        } else {
+
+            /*
+             * IMPORTANT:
+             *
+             * The Text itself always allows up to 7 lines.
+             *
+             * We DO NOT change maxLines between 2 and 7.
+             *
+             * Instead, this Box is the visible viewport and its
+             * height animates.
+             *
+             * clipToBounds() makes the text appear to reveal downward
+             * during expansion and hide upward during collapse.
+             */
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(
+                        if (hasMoreThanTwoLines == true) {
+                            contentHeight
+                        } else {
+                            collapsedHeight
+                        }
+                    )
+                    .clipToBounds()
+            ) {
+                Text(
+                    text = contentText,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = textStyle,
+                    maxLines = 7,
+                    overflow = TextOverflow.Clip
+                )
+            }
+        }
+
+        /*
+         * Only display the control when the text actually
+         * requires more than two lines.
+         */
+        if (hasMoreThanTwoLines == true) {
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            /*
+             * Single clickable Row:
+             *
+             * "Show more" and chevron therefore share exactly
+             * the same click listener.
+             */
+            Row(
+                modifier = Modifier.clickable {
+                    requestedExpanded = !requestedExpanded
+                },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+
+                Text(
+                    text = "Show more",
+                    fontSize = 20.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.width(6.dp)
+                )
+
+                MorphingChevron(
+                    expanded = requestedExpanded
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MorphingChevron(
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    /*
+     * Center Y offset in dp:
+     *
+     * +4 = down chevron
+     *  0 = flat line
+     * -4 = up chevron
+     *
+     * Animatable preserves the current rendered value when
+     * the target changes.
+     */
+    val centerOffset = remember {
+        Animatable(4f)
+    }
+
+    LaunchedEffect(expanded) {
+
+        val target = if (expanded) {
+            -4f
+        } else {
+            4f
+        }
+
+        /*
+         * Distance remaining from the currently rendered geometry.
+         *
+         * Full travel:
+         *
+         * +4dp -> -4dp = 8dp
+         *
+         * Full travel takes exactly 300ms.
+         *
+         * If reversed halfway, the remaining 4dp therefore takes
+         * 150ms. This preserves the same linear geometric velocity
+         * and avoids snapping.
+         */
+        val distance = kotlin.math.abs(
+            target - centerOffset.value
+        )
+
+        val duration = (
+            300f * (distance / 8f)
+        )
+            .roundToInt()
+            .coerceAtLeast(1)
+
+        centerOffset.animateTo(
+            targetValue = target,
+            animationSpec = tween(
+                durationMillis = duration,
+                easing = LinearEasing
+            )
+        )
+    }
+
+    Canvas(
+        modifier = modifier.size(
+            width = 16.dp,
+            height = 12.dp
+        )
+    ) {
+
+        /*
+         * Endpoint baseline.
+         */
+        val endpointY = size.height / 2f
+
+        val centerX = size.width / 2f
+
+        /*
+         * Each endpoint is exactly 6dp horizontally
+         * from the center point.
+         */
+        val horizontalOffset = 6.dp.toPx()
+
+        /*
+         * Animated center vertical displacement.
+         */
+        val animatedCenterOffset =
+            centerOffset.value.dp.toPx()
+
+        val leftPoint = Offset(
+            x = centerX - horizontalOffset,
+            y = endpointY
+        )
+
+        val centerPoint = Offset(
+            x = centerX,
+            y = endpointY + animatedCenterOffset
+        )
+
+        val rightPoint = Offset(
+            x = centerX + horizontalOffset,
+            y = endpointY
+        )
+
+        /*
+         * Left -> center
+         */
+        drawLine(
+            color = Color.Black,
+            start = leftPoint,
+            end = centerPoint,
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Butt
+        )
+
+        /*
+         * Center -> right
+         */
+        drawLine(
+            color = Color.Black,
+            start = centerPoint,
+            end = rightPoint,
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Butt
+        )
+    }
+}
+
+
+
+
+
 1. Collapsed chevron geometry
    - Center point is exactly 4dp below the endpoint line.
    - Left/right endpoints are exactly 6dp from center.
@@ -175,138 +531,7 @@ fun ExpandComponent(
 
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .border(
-                width = 1.dp,
-                color = Color.Black
-            )
-            .padding(8.dp)
-    ) {
-        /*
-         * Before line count is known we allow Text to lay itself out so
-         * onTextLayout can determine whether the control is necessary.
-         *
-         * Afterwards its visible viewport is animated between exactly
-         * two and seven line heights.
-         */
-        if (hasMoreThanTwoLines == null) {
-            Text(
-                text = contentText,
-                style = contentStyle,
-                modifier = Modifier.fillMaxWidth(),
-                onTextLayout = { result ->
-                    hasMoreThanTwoLines = result.lineCount > 2
-                }
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(
-                        if (hasMoreThanTwoLines == true) {
-                            animatedContentHeight
-                        } else {
-                            collapsedHeight
-                        }
-                    )
-            ) {
-                Text(
-                    text = contentText,
-                    style = contentStyle,
-                    maxLines = if (contentExpanded) 7 else 2,
-                    overflow = TextOverflow.Clip,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-
-        if (hasMoreThanTwoLines == true) {
-            Spacer(Modifier.height(8.dp))
-
-            /*
-             * One clickable Row means both "Show more" and the chevron
-             * share exactly the same click listener.
-             */
-            Row(
-                modifier = Modifier.clickable {
-                    targetExpanded = !targetExpanded
-                },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Show more",
-                    fontSize = 20.sp
-                )
-
-                Spacer(Modifier.width(6.dp))
-
-                ChevronMorph(
-                    expanded = targetExpanded
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChevronMorph(
-    expanded: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    /*
-     * Only the centre Y coordinate is animated.
-     *
-     * collapsed: +4dp -> V/down chevron
-     * midpoint:   0dp -> horizontal line
-     * expanded:  -4dp -> ^/up chevron
-     *
-     * animateFloatAsState starts a new animation from the CURRENT animated
-     * value whenever the target changes. Consequently a rapid tap reverses
-     * the geometry smoothly rather than snapping to either endpoint.
-     */
-    val centerYOffsetDp by animateFloatAsState(
-        targetValue = if (expanded) -4f else 4f,
-        animationSpec = tween(
-            durationMillis = 300,
-            easing = LinearEasing
-        ),
-        label = "ChevronCenterY"
-    )
-
-    val density = LocalDensity.current
-
-    Canvas(
-        modifier = modifier.size(
-            width = 16.dp,
-            height = 12.dp
-        )
-    ) {
-        val centerX = size.width / 2f
-        val endpointY = size.height / 2f
-
-        val horizontalDistance = with(density) {
-            6.dp.toPx()
-        }
-
-        val centerYOffset = with(density) {
-            centerYOffsetDp.dp.toPx()
-        }
-
-        val strokeWidth = with(density) {
-            2.dp.toPx()
-        }
-
-        val left = Offset(
-            x = centerX - horizontalDistance,
-            y = endpointY
-        )
-
-        val center = Offset(
-            x = centerX,
-            y = endpointY + centerYOffset
-        )
-
-        val right = Offset(
+(
             x = centerX + horizontalDistance,
             y = endpointY
         )
