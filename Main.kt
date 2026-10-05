@@ -1,3 +1,276 @@
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.StrokeCap
+import androidx.compose.ui.layout.onTextLayout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+
+@Composable
+fun ExpandComponent(
+    contentText: String,
+    modifier: Modifier = Modifier,
+) {
+    /*
+     * targetExpanded:
+     *     Changes immediately on every tap. Drives the arrow.
+     *
+     * contentExpanded:
+     *     Changes only after targetExpanded has remained stable for 500 ms.
+     *     Drives the content height/maxLines.
+     */
+    var targetExpanded by remember(contentText) {
+        mutableStateOf(false)
+    }
+    var contentExpanded by remember(contentText) {
+        mutableStateOf(false)
+    }
+
+    /*
+     * Determine whether the complete text requires more than two lines.
+     *
+     * We let Text perform normal layout without maxLines initially and
+     * inspect the resulting line count. Once known, the actual visible
+     * window is constrained below.
+     */
+    var hasMoreThanTwoLines by remember(contentText) {
+        mutableStateOf<Boolean?>(null)
+    }
+
+    /*
+     * Debounce the content state.
+     *
+     * When targetExpanded changes, Compose cancels the coroutine belonging
+     * to the previous LaunchedEffect and launches this one. Therefore rapid
+     * taps continually restart the 500 ms delay.
+     */
+    LaunchedEffect(targetExpanded) {
+        delay(500)
+        contentExpanded = targetExpanded
+    }
+
+    /*
+     * 10sp text with a fixed line height makes the requested 2-line and
+     * 7-line windows deterministic.
+     *
+     * Using 12sp here gives:
+     *   collapsed = 24sp high
+     *   expanded  = 84sp high
+     *
+     * The requirement specifies 10sp text but not a separate line height,
+     * so a fixed 12sp line height provides a practical readable window.
+     */
+    val contentStyle = TextStyle(
+        fontSize = 10.sp,
+        lineHeight = 12.sp
+    )
+
+    val density = LocalDensity.current
+
+    val collapsedHeight = with(density) {
+        (contentStyle.lineHeight * 2).toDp()
+    }
+    val expandedHeight = with(density) {
+        (contentStyle.lineHeight * 7).toDp()
+    }
+
+    val animatedContentHeight by animateDpAsState(
+        targetValue = if (contentExpanded) {
+            expandedHeight
+        } else {
+            collapsedHeight
+        },
+        animationSpec = tween(durationMillis = 800),
+        label = "ExpandableContentHeight"
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = Color.Black
+            )
+            .padding(8.dp)
+    ) {
+        /*
+         * Before line count is known we allow Text to lay itself out so
+         * onTextLayout can determine whether the control is necessary.
+         *
+         * Afterwards its visible viewport is animated between exactly
+         * two and seven line heights.
+         */
+        if (hasMoreThanTwoLines == null) {
+            Text(
+                text = contentText,
+                style = contentStyle,
+                modifier = Modifier.fillMaxWidth(),
+                onTextLayout = { result ->
+                    hasMoreThanTwoLines = result.lineCount > 2
+                }
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(
+                        if (hasMoreThanTwoLines == true) {
+                            animatedContentHeight
+                        } else {
+                            collapsedHeight
+                        }
+                    )
+            ) {
+                Text(
+                    text = contentText,
+                    style = contentStyle,
+                    maxLines = if (contentExpanded) 7 else 2,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        if (hasMoreThanTwoLines == true) {
+            Spacer(Modifier.height(8.dp))
+
+            /*
+             * One clickable Row means both "Show more" and the chevron
+             * share exactly the same click listener.
+             */
+            Row(
+                modifier = Modifier.clickable {
+                    targetExpanded = !targetExpanded
+                },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Show more",
+                    fontSize = 20.sp
+                )
+
+                Spacer(Modifier.width(6.dp))
+
+                ChevronMorph(
+                    expanded = targetExpanded
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChevronMorph(
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    /*
+     * Only the centre Y coordinate is animated.
+     *
+     * collapsed: +4dp -> V/down chevron
+     * midpoint:   0dp -> horizontal line
+     * expanded:  -4dp -> ^/up chevron
+     *
+     * animateFloatAsState starts a new animation from the CURRENT animated
+     * value whenever the target changes. Consequently a rapid tap reverses
+     * the geometry smoothly rather than snapping to either endpoint.
+     */
+    val centerYOffsetDp by animateFloatAsState(
+        targetValue = if (expanded) -4f else 4f,
+        animationSpec = tween(
+            durationMillis = 300,
+            easing = LinearEasing
+        ),
+        label = "ChevronCenterY"
+    )
+
+    val density = LocalDensity.current
+
+    Canvas(
+        modifier = modifier.size(
+            width = 16.dp,
+            height = 12.dp
+        )
+    ) {
+        val centerX = size.width / 2f
+        val endpointY = size.height / 2f
+
+        val horizontalDistance = with(density) {
+            6.dp.toPx()
+        }
+
+        val centerYOffset = with(density) {
+            centerYOffsetDp.dp.toPx()
+        }
+
+        val strokeWidth = with(density) {
+            2.dp.toPx()
+        }
+
+        val left = Offset(
+            x = centerX - horizontalDistance,
+            y = endpointY
+        )
+
+        val center = Offset(
+            x = centerX,
+            y = endpointY + centerYOffset
+        )
+
+        val right = Offset(
+            x = centerX + horizontalDistance,
+            y = endpointY
+        )
+
+        drawLine(
+            color = Color.Black,
+            start = left,
+            end = center,
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Butt
+        )
+
+        drawLine(
+            color = Color.Black,
+            start = center,
+            end = right,
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Butt
+        )
+    }
+}
+
+
+
+
 # Android Interruptible Dropdown Arrow Layout
 
 ## Context
