@@ -1,3 +1,12 @@
+The three I would actually add
+For maximum difficulty without making the exercise artificially complicated:
+#6 — Exact debounce-boundary race: Tests event ordering and coroutine cancellation guarantees.
+#7 — Atomic content measurement: Tests Compose's measurement and state consistency.
+#1 — Unchanged committed target: Tests whether the candidate distinguishes user intent, committed state, and rendered animation state.
+
+
+
+
 1. Debounce must not restart for an unchanged content target
    - If expansion is already committed and the content is animating toward expanded, tapping collapse and then expand again within 500ms must not restart the expansion animation.
    - The content must continue toward its existing target without resetting its animation progress.
