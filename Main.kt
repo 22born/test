@@ -1,3 +1,19 @@
+1. Debounce must not restart for an unchanged content target
+Requirement: If expansion is already committed and the content is animating toward expanded, tapping collapse and then expand again within 500ms must not restart the expansion animation.
+Trap: LaunchedEffect(targetExpanded) combined with animateDpAsState can accidentally restart or retarget animations even though the final committed state never changed.
+
+2.  A tap exactly at 500ms has deterministic ordering
+Requirement: If a collapse tap occurs at the exact frame when the expansion debounce expires, the collapse intent takes precedence. The expansion animation must not start, even for one frame.
+Trap: A simple LaunchedEffect { delay(500); expanded = target } cannot guarantee this ordering when the delayed continuation and click handler are both eligible to execute in the same frame.
+This requires an explicitly defined event-ordering policy, not merely coroutine cancellation.
+
+3. No stale measurement after content replacement
+Requirement: When content changes during expansion, the new text must be measured using the current width, density, font scale, and style before any new height target is committed. No frame may expose the old text's height with the new text's layout.
+Trap: onTextLayout updates state after layout. A naïve implementation can temporarily combine old measurement data with new content.
+
+
+
+
 The three I would actually add
 For maximum difficulty without making the exercise artificially complicated:
 #6 — Exact debounce-boundary race: Tests event ordering and coroutine cancellation guarantees.
